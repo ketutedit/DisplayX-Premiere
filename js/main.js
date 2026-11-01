@@ -178,7 +178,6 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;color:
                 width: '100%',
                 height: '100%',
                 videoId: VIDEO_ID,
-                host: 'https://www.youtube.com',
                 playerVars: {
                     autoplay: 1,
                     playsinline: 1,
@@ -239,6 +238,7 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;color:
                     res.writeHead(200, {
                         'Content-Type': 'text/html; charset=utf-8',
                         'Cache-Control': 'no-store',
+                        'Referrer-Policy': 'origin',
                         'X-Content-Type-Options': 'nosniff'
                     });
                     return res.end(playerHtml);
