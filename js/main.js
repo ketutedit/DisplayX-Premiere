@@ -115,6 +115,7 @@
                     return res.end(JSON.stringify({
                         status: 'ok',
                         service: 'DisplayX Player Service',
+                        version: '1.1.4',
                         port: PLAYER_PORT
                     }));
                 }
@@ -175,7 +176,7 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;color:
     }
 
     if (debugMode) {
-        showStatus('1. DisplayX local page: OK\\n2. YouTube iframe: waiting for navigation event…\\nNote: iframe onload does not prove that video playback rendered.', true);
+        showStatus('1. DisplayX local page: OK (build 1.1.4)\\n2. YouTube iframe: waiting for navigation event…\\nNote: iframe onload does not prove that video playback rendered.', true);
     }
 
     frame.onload = function () {
