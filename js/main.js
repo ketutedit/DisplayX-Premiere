@@ -94,141 +94,6 @@
         tryVariant(0);
     }
 
-    // Fetch the IFrame API through Node.js and re-serve it from localhost.
-    // Some CEP/CEF builds cannot load this script directly over YouTube HTTPS.
-    function serveYouTubeApi(res, redirectCount) {
-        if (!https) {
-            res.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8' });
-            return res.end('DisplayX: Node HTTPS module is unavailable.');
-        }
-
-        const target = 'https://www.youtube.com/iframe_api';
-        const options = {
-            hostname: 'www.youtube.com',
-            path: '/iframe_api',
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': '*/*',
-                'Accept-Language': 'en-US,en;q=0.9'
-            }
-        };
-
-        const request = https.get(options, (upstream) => {
-            const status = Number(upstream.statusCode || 0);
-
-            if (status >= 300 && status < 400 && upstream.headers.location) {
-                upstream.resume();
-                if ((redirectCount || 0) >= 4) {
-                    res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
-                    return res.end('DisplayX: Too many redirects while requesting YouTube IFrame API.');
-                }
-                let redirectUrl;
-                try {
-                    redirectUrl = new URL(upstream.headers.location, target);
-                } catch (e) {
-                    res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
-                    return res.end('DisplayX: Invalid redirect from YouTube IFrame API.');
-                }
-                if (redirectUrl.protocol !== 'https:' ||
-                    !(redirectUrl.hostname === 'youtube.com' || redirectUrl.hostname.endsWith('.youtube.com'))) {
-                    res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
-                    return res.end('DisplayX: YouTube IFrame API redirected to an unexpected host.');
-                }
-                return serveYouTubeApiUrl(redirectUrl, res, (redirectCount || 0) + 1);
-            }
-
-            if (status !== 200) {
-                let body = '';
-                upstream.setEncoding('utf8');
-                upstream.on('data', chunk => {
-                    if (body.length < 1200) body += chunk;
-                });
-                upstream.on('end', () => {
-                    if (res.headersSent) return;
-                    res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
-                    res.end('DisplayX: YouTube IFrame API returned HTTP ' + status + (body ? '. ' + body.slice(0, 500) : '.'));
-                });
-                return;
-            }
-
-            res.writeHead(200, {
-                'Content-Type': upstream.headers['content-type'] || 'application/javascript; charset=utf-8',
-                'Cache-Control': 'public, max-age=3600',
-                'Referrer-Policy': 'origin',
-                'X-Content-Type-Options': 'nosniff'
-            });
-            upstream.on('error', (error) => {
-                console.warn('DisplayX YouTube API proxy stream error:', error.message);
-                if (!res.destroyed) res.destroy();
-            });
-            upstream.pipe(res);
-        });
-
-        request.on('error', (error) => {
-            console.warn('DisplayX YouTube API proxy request failed:', error.message);
-            if (!res.headersSent) {
-                res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
-                res.end('DisplayX: Could not reach YouTube IFrame API from Node.js: ' + error.message);
-            }
-        });
-        request.setTimeout(12000, () => request.destroy(new Error('YouTube IFrame API request timed out')));
-    }
-
-    function serveYouTubeApiUrl(targetUrl, res, redirectCount) {
-        const request = https.get(targetUrl, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': '*/*',
-                'Accept-Language': 'en-US,en;q=0.9'
-            }
-        }, (upstream) => {
-            const status = Number(upstream.statusCode || 0);
-            if (status >= 300 && status < 400 && upstream.headers.location) {
-                upstream.resume();
-                if (redirectCount >= 4) {
-                    res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
-                    return res.end('DisplayX: Too many redirects while requesting YouTube IFrame API.');
-                }
-                let nextUrl;
-                try {
-                    nextUrl = new URL(upstream.headers.location, targetUrl);
-                } catch (e) {
-                    res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
-                    return res.end('DisplayX: Invalid redirect from YouTube IFrame API.');
-                }
-                if (nextUrl.protocol !== 'https:' ||
-                    !(nextUrl.hostname === 'youtube.com' || nextUrl.hostname.endsWith('.youtube.com'))) {
-                    res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
-                    return res.end('DisplayX: YouTube IFrame API redirected to an unexpected host.');
-                }
-                return serveYouTubeApiUrl(nextUrl, res, redirectCount + 1);
-            }
-            if (status !== 200) {
-                upstream.resume();
-                res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
-                return res.end('DisplayX: YouTube IFrame API returned HTTP ' + status + '.');
-            }
-            res.writeHead(200, {
-                'Content-Type': upstream.headers['content-type'] || 'application/javascript; charset=utf-8',
-                'Cache-Control': 'public, max-age=3600',
-                'Referrer-Policy': 'origin',
-                'X-Content-Type-Options': 'nosniff'
-            });
-            upstream.on('error', (error) => {
-                console.warn('DisplayX YouTube API proxy stream error:', error.message);
-                if (!res.destroyed) res.destroy();
-            });
-            upstream.pipe(res);
-        });
-        request.on('error', (error) => {
-            if (!res.headersSent) {
-                res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
-                res.end('DisplayX: Could not reach YouTube IFrame API from Node.js: ' + error.message);
-            }
-        });
-        request.setTimeout(12000, () => request.destroy(new Error('YouTube IFrame API request timed out')));
-    }
-
     function startLocalPlayerServer() {
         if (playerServer || !http) return;
         try {
@@ -255,6 +120,7 @@
                     // Referer, instead of rewriting/proxying YouTube's player HTML.
                     const origin = `http://127.0.0.1:${PLAYER_PORT}`;
                     const loopParams = isLoop ? `&loop=1&playlist=${vidId}` : '';
+                    const embedUrl = `https://www.youtube.com/embed/${vidId}?autoplay=1&playsinline=1&controls=1&rel=0${loopParams}`;
                     const playerHtml = `<!doctype html>
 <html lang="en">
 <head>
@@ -264,114 +130,51 @@
 <title>DisplayX YouTube Player</title>
 <style>
 html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;color:#fff;font:13px -apple-system,BlinkMacSystemFont,sans-serif}
-#yt-player{position:absolute;inset:0;width:100%;height:100%}
-#status{position:absolute;left:8px;right:8px;bottom:8px;padding:6px 8px;background:rgba(0,0,0,.72);color:#cbd5e1;font-size:11px;line-height:1.4;pointer-events:none;z-index:5}
+#yt-player{position:absolute;inset:0;width:100%;height:100%;border:0;background:#000}
+#status{position:absolute;left:8px;right:8px;bottom:8px;padding:7px 9px;background:rgba(0,0,0,.82);color:#cbd5e1;font-size:11px;line-height:1.4;pointer-events:none;z-index:5}
 </style>
 </head>
 <body>
-<div id="yt-player"></div>
+<iframe
+  id="yt-player"
+  src="${embedUrl}"
+  title="YouTube video player"
+  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+  allowfullscreen
+  referrerpolicy="origin"></iframe>
 <div id="status">Connecting to YouTube…</div>
 <script>
 (function () {
-    var VIDEO_ID = ${JSON.stringify(vidId)};
-    var LOCAL_ORIGIN = ${JSON.stringify(origin)};
-    var LOOP_ENABLED = ${isLoop ? 'true' : 'false'};
+    var frame = document.getElementById('yt-player');
     var statusEl = document.getElementById('status');
-    var readyTimer = null;
-
-    function report(type, details) {
-        var payload = { source: 'displayx-youtube-player', type: type, videoId: VIDEO_ID };
-        if (details) {
-            for (var key in details) {
-                if (Object.prototype.hasOwnProperty.call(details, key)) payload[key] = details[key];
-            }
-        }
-        try { window.parent.postMessage(payload, '*'); } catch (e) {}
-    }
-
-    function status(message) {
-        statusEl.textContent = message;
+    var timer = setTimeout(function () {
+        statusEl.textContent = 'YouTube is taking too long to respond. Check your internet connection, embedding permission, or Premiere CEP browser compatibility.';
         statusEl.style.display = 'block';
-    }
+    }, 18000);
 
-    function errorMessage(code) {
-        var messages = {
-            2: 'The video ID or request parameter is invalid.',
-            5: 'The HTML5 player cannot play this video in this embedded browser.',
-            100: 'The video was not found, removed, or made private.',
-            101: 'The owner does not allow this video to be embedded.',
-            150: 'The owner does not allow this video to be embedded.',
-            153: 'YouTube did not receive a valid HTTP Referer or equivalent client identity.'
-        };
-        return messages[code] || 'YouTube player returned an unknown error.';
-    }
-
-    window.onYouTubeIframeAPIReady = function () {
-        status('YouTube API loaded. Initializing player…');
+    frame.onload = function () {
+        clearTimeout(timer);
+        // The YouTube page has been delivered. Any video-specific restrictions
+        // (private/deleted/embedding-disabled) are now shown by YouTube itself.
+        statusEl.style.display = 'none';
         try {
-            var player = new YT.Player('yt-player', {
-                width: '100%',
-                height: '100%',
-                videoId: VIDEO_ID,
-                playerVars: {
-                    autoplay: 1,
-                    playsinline: 1,
-                    controls: 1,
-                    rel: 0,
-                    enablejsapi: 1,
-                    origin: LOCAL_ORIGIN,
-                    loop: LOOP_ENABLED ? 1 : 0,
-                    playlist: LOOP_ENABLED ? VIDEO_ID : ''
-                },
-                events: {
-                    onReady: function (event) {
-                        if (readyTimer) clearTimeout(readyTimer);
-                        statusEl.style.display = 'none';
-                        report('ready', {});
-                        try { event.target.playVideo(); } catch (e) {}
-                    },
-                    onStateChange: function (event) {
-                        report('state', { state: event.data });
-                        if (event.data === YT.PlayerState.PLAYING) {
-                            statusEl.style.display = 'none';
-                        } else if (event.data === YT.PlayerState.BUFFERING) {
-                            status('Buffering YouTube video…');
-                        }
-                    },
-                    onError: function (event) {
-                        if (readyTimer) clearTimeout(readyTimer);
-                        var message = errorMessage(event.data);
-                        status('YouTube error ' + event.data + ': ' + message);
-                        report('error', { code: event.data, message: message });
-                    }
-                }
-            });
-        } catch (error) {
-            status('Could not initialize YouTube player: ' + error.message);
-            report('api_error', { message: error.message });
-        }
+            window.parent.postMessage({
+                source: 'displayx-youtube-player',
+                type: 'frame_loaded',
+                videoId: ${JSON.stringify(vidId)}
+            }, '*');
+        } catch (e) {}
     };
 
-    var apiScript = document.createElement('script');
-    apiScript.src = LOCAL_ORIGIN + '/youtube-iframe-api.js';
-    apiScript.onerror = function () {
-        if (readyTimer) clearTimeout(readyTimer);
-        status('DisplayX could not load the YouTube API through its local service. Reopen the panel and inspect the CEP console for the proxy HTTP error.');
-        report('api_error', {
-            message: 'Failed to load the locally proxied YouTube IFrame API.',
-            endpoint: apiScript.src
-        });
+    frame.onerror = function () {
+        clearTimeout(timer);
+        statusEl.textContent = 'Could not load the YouTube video frame. Check your connection or open the video in a browser.';
+        statusEl.style.display = 'block';
     };
-    document.head.appendChild(apiScript);
-
-    readyTimer = setTimeout(function () {
-        status('YouTube player did not become ready. Check the embedded player error or CEP browser compatibility.');
-        report('timeout', { message: 'YouTube API/player readiness timed out.' });
-    }, 15000);
 })();
 </script>
 </body>
-</html>`;
+</html>`
 
                     res.writeHead(200, {
                         'Content-Type': 'text/html; charset=utf-8',
@@ -380,10 +183,6 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;color:
                         'X-Content-Type-Options': 'nosniff'
                     });
                     return res.end(playerHtml);
-                }
-
-                if (parsed.pathname === '/youtube-iframe-api.js') {
-                    return serveYouTubeApi(res, 0);
                 }
 
                 if (parsed.pathname === '/thumb') {
@@ -613,42 +412,6 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;color:
         }
     }
 
-    function handleYouTubePlayerMessage(event) {
-        if (!playerFrame || event.source !== playerFrame.contentWindow) return;
-        if (event.origin !== `http://127.0.0.1:${PLAYER_PORT}`) return;
-
-        const data = event.data;
-        if (!data || data.source !== 'displayx-youtube-player') return;
-
-        if (data.type === 'ready') {
-            if (playerLoadTimer) {
-                clearTimeout(playerLoadTimer);
-                playerLoadTimer = null;
-            }
-            hidePlayerLoading();
-            return;
-        }
-
-        if (data.type === 'error' || data.type === 'api_error' || data.type === 'timeout') {
-            if (playerLoadTimer) {
-                clearTimeout(playerLoadTimer);
-                playerLoadTimer = null;
-            }
-            showPlayerError(data.type === 'error'
-                ? `YouTube error ${data.code}: ${data.message}`
-                : (data.message || 'YouTube player failed to initialize.'));
-            return;
-        }
-
-        if (data.type === 'state' && data.state === 1) {
-            if (playerLoadTimer) {
-                clearTimeout(playerLoadTimer);
-                playerLoadTimer = null;
-            }
-            hidePlayerLoading();
-        }
-    }
-
     function playVideo(id, title = "YouTube Video", channel = "", duration = "", requestedMode = null) {
         if (!id) return;
 
@@ -698,15 +461,13 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;color:
         }
 
         playerFrame.onload = () => {
-            // The local wrapper loading is not proof that the YouTube player is ready.
-            // The IFrame API sends a dedicated "ready" message when playback is initialized.
-            if (!http) {
-                if (playerLoadTimer) {
-                    clearTimeout(playerLoadTimer);
-                    playerLoadTimer = null;
-                }
-                hidePlayerLoading();
+            // The local wrapper has loaded. Its own status overlay tracks the nested
+            // YouTube iframe so the parent panel does not cover the player.
+            if (playerLoadTimer) {
+                clearTimeout(playerLoadTimer);
+                playerLoadTimer = null;
             }
+            hidePlayerLoading();
         };
 
         playerFrame.onerror = () => {
@@ -1162,8 +923,6 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;color:
     // ==========================================
     // EVENT LISTENERS & SETUP
     // ==========================================
-    window.addEventListener('message', handleYouTubePlayerMessage, false);
-
     // Search Button Click
     btnSearch.addEventListener('click', () => {
         const val = searchInput.value.trim();
