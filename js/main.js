@@ -30,7 +30,7 @@
 
     const csInterface = new CSInterface();
 
-    // Local HTTP Player Service (Reverse-Proxy for YouTube Embed with Valid Referer)
+    // Local HTTP origin for the official YouTube embed and thumbnail proxy
     const PLAYER_PORT = 48293;
     let playerServer = null;
     let playerLoadTimer = null;
@@ -46,7 +46,7 @@
         const variants = ['maxresdefault', 'sddefault', 'hqdefault', 'mqdefault', 'default'];
 
         function tryVariant(index) {
-            if (res.destroyed || res.writableEnded) return;
+            if (res.finished) return;
             if (index >= variants.length) {
                 if (!res.headersSent) {
                     res.writeHead(404, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' });
@@ -352,41 +352,8 @@ iframe{display:block;width:100%;height:100%;border:0;background:#000}
     }
 
     // ==========================================
-    // STREAM EXTRACTOR & DUAL-MODE PLAYER CONTROLLER
+    // YOUTUBE PLAYER CONTROLLER
     // ==========================================
-    function getDirectStreamUrl(vidId, callback) {
-        if (!cp || !cp.spawn) {
-            return callback(new Error("child_process not available"));
-        }
-
-        const ytDlp = resolveYtDlp();
-        const targetUrl = `https://www.youtube.com/watch?v=${vidId}`;
-        const args = [
-            '-g',
-            '-f', '18/b[ext=mp4]/best',
-            '--no-warnings',
-            targetUrl
-        ];
-
-        let stdout = '';
-        let stderr = '';
-        const proc = cp.spawn(ytDlp, args, { env: getProcessEnv() });
-
-        proc.stdout.on('data', d => stdout += d.toString());
-        proc.stderr.on('data', d => stderr += d.toString());
-
-        proc.on('close', (code) => {
-            const streamUrl = stdout.trim().split('\n')[0];
-            if (code === 0 && streamUrl && streamUrl.startsWith('http')) {
-                callback(null, streamUrl);
-            } else {
-                callback(new Error(stderr || `yt-dlp exit ${code}`));
-            }
-        });
-
-        proc.on('error', (err) => callback(err));
-    }
-
     function showPlayerLoading(text) {
         if (playerLoading) {
             if (playerLoadingText) playerLoadingText.textContent = text || 'Memuat Video...';
@@ -419,39 +386,9 @@ iframe{display:block;width:100%;height:100%;border:0;background:#000}
         saveToHistory(currentVideo);
         highlightActiveCard(id);
 
-        // Use YouTube's official embedded player. Direct googlevideo MP4 extraction is intentionally not used.\n        playerMode = 'embed';\n        loadEmbedStream(id);
-    }
-
-    function loadDirectStream(id, title) {
-        showPlayerLoading("Menyiapkan stream video MP4...");
-        if (btnTogglePlayerMode) {
-            btnTogglePlayerMode.innerHTML = '🎬 Mode: MP4';
-            btnTogglePlayerMode.title = 'Sedang memutar stream direct MP4. Klik untuk ganti ke mode Embed YouTube.';
-        }
-
-        getDirectStreamUrl(id, (err, streamUrl) => {
-            if (err || !streamUrl) {
-                console.warn("Direct stream failed, falling back to Embed:", err ? err.message : "No stream");
-                showToast("Stream direct tidak tersedia, beralih ke Embed...");
-                loadEmbedStream(id);
-                return;
-            }
-
-            hidePlayerLoading();
-            if (playerFrame) {
-                playerFrame.style.display = 'none';
-                playerFrame.src = 'about:blank';
-            }
-            if (nativePlayer) {
-                nativePlayer.style.display = 'block';
-                nativePlayer.src = streamUrl;
-                nativePlayer.loop = isLooping;
-                nativePlayer.play().catch(e => {
-                    console.log("Autoplay notice:", e);
-                });
-            }
-            showToast(`Memutar (MP4): ${title.length > 25 ? title.substring(0, 25) + '...' : title}`);
-        });
+        // Use YouTube's official embedded player. Direct MP4 extraction is not used.
+        playerMode = 'embed';
+        loadEmbedStream(id);
     }
 
     function loadEmbedStream(id) {
