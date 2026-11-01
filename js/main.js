@@ -120,7 +120,6 @@
                     // Referer, instead of rewriting/proxying YouTube's player HTML.
                     const origin = `http://127.0.0.1:${PLAYER_PORT}`;
                     const loopParams = isLoop ? `&loop=1&playlist=${vidId}` : '';
-                    const embedUrl = `https://www.youtube.com/embed/${vidId}?autoplay=1&playsinline=1&rel=0&controls=1&enablejsapi=1&origin=${encodeURIComponent(origin)}${loopParams}`;
                     const playerHtml = `<!doctype html>
 <html lang="en">
 <head>
@@ -129,17 +128,111 @@
 <meta name="referrer" content="origin">
 <title>DisplayX YouTube Player</title>
 <style>
-html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000}
-iframe{display:block;width:100%;height:100%;border:0;background:#000}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;color:#fff;font:13px -apple-system,BlinkMacSystemFont,sans-serif}
+#yt-player{position:absolute;inset:0;width:100%;height:100%}
+#status{position:absolute;left:8px;right:8px;bottom:8px;padding:6px 8px;background:rgba(0,0,0,.72);color:#cbd5e1;font-size:11px;line-height:1.4;pointer-events:none;z-index:5}
 </style>
 </head>
 <body>
-<iframe
-  src="${embedUrl}"
-  title="YouTube video player"
-  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-  allowfullscreen
-  referrerpolicy="origin"></iframe>
+<div id="yt-player"></div>
+<div id="status">Connecting to YouTube…</div>
+<script>
+(function () {
+    var VIDEO_ID = ${JSON.stringify(vidId)};
+    var LOCAL_ORIGIN = ${JSON.stringify(origin)};
+    var LOOP_ENABLED = ${isLoop ? 'true' : 'false'};
+    var statusEl = document.getElementById('status');
+    var readyTimer = null;
+
+    function report(type, details) {
+        var payload = { source: 'displayx-youtube-player', type: type, videoId: VIDEO_ID };
+        if (details) {
+            for (var key in details) {
+                if (Object.prototype.hasOwnProperty.call(details, key)) payload[key] = details[key];
+            }
+        }
+        try { window.parent.postMessage(payload, '*'); } catch (e) {}
+    }
+
+    function status(message) {
+        statusEl.textContent = message;
+        statusEl.style.display = 'block';
+    }
+
+    function errorMessage(code) {
+        var messages = {
+            2: 'The video ID or request parameter is invalid.',
+            5: 'The HTML5 player cannot play this video in this embedded browser.',
+            100: 'The video was not found, removed, or made private.',
+            101: 'The owner does not allow this video to be embedded.',
+            150: 'The owner does not allow this video to be embedded.',
+            153: 'YouTube did not receive a valid HTTP Referer or equivalent client identity.'
+        };
+        return messages[code] || 'YouTube player returned an unknown error.';
+    }
+
+    window.onYouTubeIframeAPIReady = function () {
+        status('YouTube API loaded. Initializing player…');
+        try {
+            var player = new YT.Player('yt-player', {
+                width: '100%',
+                height: '100%',
+                videoId: VIDEO_ID,
+                host: 'https://www.youtube.com',
+                playerVars: {
+                    autoplay: 1,
+                    playsinline: 1,
+                    controls: 1,
+                    rel: 0,
+                    enablejsapi: 1,
+                    origin: LOCAL_ORIGIN,
+                    loop: LOOP_ENABLED ? 1 : 0,
+                    playlist: LOOP_ENABLED ? VIDEO_ID : ''
+                },
+                events: {
+                    onReady: function (event) {
+                        if (readyTimer) clearTimeout(readyTimer);
+                        statusEl.style.display = 'none';
+                        report('ready', {});
+                        try { event.target.playVideo(); } catch (e) {}
+                    },
+                    onStateChange: function (event) {
+                        report('state', { state: event.data });
+                        if (event.data === YT.PlayerState.PLAYING) {
+                            statusEl.style.display = 'none';
+                        } else if (event.data === YT.PlayerState.BUFFERING) {
+                            status('Buffering YouTube video…');
+                        }
+                    },
+                    onError: function (event) {
+                        if (readyTimer) clearTimeout(readyTimer);
+                        var message = errorMessage(event.data);
+                        status('YouTube error ' + event.data + ': ' + message);
+                        report('error', { code: event.data, message: message });
+                    }
+                }
+            });
+        } catch (error) {
+            status('Could not initialize YouTube player: ' + error.message);
+            report('api_error', { message: error.message });
+        }
+    };
+
+    var apiScript = document.createElement('script');
+    apiScript.src = 'https://www.youtube.com/iframe_api';
+    apiScript.onerror = function () {
+        if (readyTimer) clearTimeout(readyTimer);
+        status('Could not load YouTube IFrame API. Check network or CEP browser compatibility.');
+        report('api_error', { message: 'Failed to load https://www.youtube.com/iframe_api' });
+    };
+    document.head.appendChild(apiScript);
+
+    readyTimer = setTimeout(function () {
+        status('YouTube player did not become ready. Check the embedded player error or CEP browser compatibility.');
+        report('timeout', { message: 'YouTube API/player readiness timed out.' });
+    }, 15000);
+})();
+</script>
 </body>
 </html>`;
 
@@ -361,9 +454,56 @@ iframe{display:block;width:100%;height:100%;border:0;background:#000}
         }
     }
 
+    function showPlayerError(message) {
+        if (!playerLoading) {
+            showToast(message, 8000);
+            return;
+        }
+        if (playerLoadingText) playerLoadingText.textContent = message;
+        playerLoading.classList.add('dx-player-error');
+        playerLoading.style.display = 'flex';
+    }
+
     function hidePlayerLoading() {
         if (playerLoading) {
+            playerLoading.classList.remove('dx-player-error');
             playerLoading.style.display = 'none';
+        }
+    }
+
+    function handleYouTubePlayerMessage(event) {
+        if (!playerFrame || event.source !== playerFrame.contentWindow) return;
+        if (event.origin !== `http://127.0.0.1:${PLAYER_PORT}`) return;
+
+        const data = event.data;
+        if (!data || data.source !== 'displayx-youtube-player') return;
+
+        if (data.type === 'ready') {
+            if (playerLoadTimer) {
+                clearTimeout(playerLoadTimer);
+                playerLoadTimer = null;
+            }
+            hidePlayerLoading();
+            return;
+        }
+
+        if (data.type === 'error' || data.type === 'api_error' || data.type === 'timeout') {
+            if (playerLoadTimer) {
+                clearTimeout(playerLoadTimer);
+                playerLoadTimer = null;
+            }
+            showPlayerError(data.type === 'error'
+                ? `YouTube error ${data.code}: ${data.message}`
+                : (data.message || 'YouTube player failed to initialize.'));
+            return;
+        }
+
+        if (data.type === 'state' && data.state === 1) {
+            if (playerLoadTimer) {
+                clearTimeout(playerLoadTimer);
+                playerLoadTimer = null;
+            }
+            hidePlayerLoading();
         }
     }
 
@@ -416,11 +556,15 @@ iframe{display:block;width:100%;height:100%;border:0;background:#000}
         }
 
         playerFrame.onload = () => {
-            if (playerLoadTimer) {
-                clearTimeout(playerLoadTimer);
-                playerLoadTimer = null;
+            // The local wrapper loading is not proof that the YouTube player is ready.
+            // The IFrame API sends a dedicated "ready" message when playback is initialized.
+            if (!http) {
+                if (playerLoadTimer) {
+                    clearTimeout(playerLoadTimer);
+                    playerLoadTimer = null;
+                }
+                hidePlayerLoading();
             }
-            hidePlayerLoading();
         };
 
         playerFrame.onerror = () => {
@@ -443,9 +587,8 @@ iframe{display:block;width:100%;height:100%;border:0;background:#000}
         playerFrame.src = targetUrl;
         playerLoadTimer = setTimeout(() => {
             playerLoadTimer = null;
-            hidePlayerLoading();
-            showToast('YouTube memuat terlalu lama. Periksa koneksi atau buka video di browser.');
-        }, 12000);
+            showPlayerError('YouTube belum merespons. Periksa koneksi, CEP/CEF browser, atau error embed YouTube.');
+        }, 18000);
     }
 
     function togglePlayerMode() {
@@ -877,6 +1020,8 @@ iframe{display:block;width:100%;height:100%;border:0;background:#000}
     // ==========================================
     // EVENT LISTENERS & SETUP
     // ==========================================
+    window.addEventListener('message', handleYouTubePlayerMessage, false);
+
     // Search Button Click
     btnSearch.addEventListener('click', () => {
         const val = searchInput.value.trim();
