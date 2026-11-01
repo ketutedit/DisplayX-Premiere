@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DisplayX - YouTube Player for Premiere Pro</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <!-- Top Header -->
+    <header class="dx-header">
+        <div class="dx-brand">
+            <div class="dx-logo-icon">&#9658;</div>
+            <span class="dx-title">DisplayX</span>
+            <span class="dx-badge">YouTube</span>
+        </div>
+        <div class="dx-header-actions">
+            <button class="dx-icon-btn" id="btnToggleLoop" title="Loop Video (Ulangi terus)">&#8634;</button>
+            <button class="dx-icon-btn" id="btnToggleTheater" title="Mode Layar Penuh / Theater">&#9974;</button>
+            <button class="dx-icon-btn" id="btnExternalBrowser" title="Buka di Browser Asli (Chrome/Safari)">&#8599;</button>
+        </div>
+    </header>
+
+    <!-- Clipboard Auto-Detect Banner -->
+    <div class="dx-clipboard-banner" id="clipboardBanner" style="display: none;">
+        <span>&#128203;</span>
+        <span class="dx-clipboard-text" id="clipboardText">Link video terdeteksi dari clipboard</span>
+        <button class="dx-clipboard-play-btn" id="btnPlayClipboard">&#9658; Putar</button>
+        <button class="dx-clipboard-close" id="btnCloseClipboard">&times;</button>
+    </div>
+
+    <!-- Persistent YouTube Player Stage (16:9) -->
+    <div class="dx-player-stage" id="playerStage">
+        <iframe id="playerFrame" class="dx-player-frame" 
+                src="" 
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" 
+                allowfullscreen></iframe>
+
+        <!-- Direct Native HTML5 Video Player (Zero Embed Blocks) -->
+        <video id="nativePlayer" class="dx-player-frame" controls autoplay style="display: none;"></video>
+
+        <!-- Loading Spinner Overlay -->
+        <div class="dx-player-loading" id="playerLoading" style="display: none;">
+            <div class="dx-spinner"></div>
+            <div class="dx-loading-text" id="playerLoadingText">Memuat Video...</div>
+        </div>
+
+        <!-- Placeholder when no video is playing yet -->
+        <div class="dx-player-placeholder" id="playerPlaceholder">
+            <div class="dx-placeholder-icon">&#9658;</div>
+            <div class="dx-placeholder-title">DisplayX Player</div>
+            <div class="dx-placeholder-desc">Cari video referensi, paste link YouTube, atau pilih kategori di bawah untuk mulai streaming.</div>
+        </div>
+    </div>
+
+    <!-- Now Playing Info Bar -->
+    <div class="dx-now-playing-bar" id="nowPlayingBar" style="display: none;">
+        <div class="dx-now-playing-info">
+            <div class="dx-now-playing-title" id="nowPlayingTitle">-</div>
+            <div class="dx-now-playing-meta">
+                <span class="dx-now-playing-channel" id="nowPlayingChannel">-</span>
+                <span id="nowPlayingDuration">0:00</span>
+            </div>
+        </div>
+        <div class="dx-now-playing-actions">
+            <button class="dx-action-pill" id="btnTogglePlayerMode" title="Ganti antara mode Embed dan Direct MP4 Stream">📺 Embed</button>
+            <button class="dx-action-pill" id="btnBookmark" title="Simpan ke Favorit">
+                <span id="bookmarkIcon">&#9734;</span> Favorit
+            </button>
+            <button class="dx-action-pill" id="btnCopyLink" title="Salin URL YouTube">&#128203; Salin</button>
+            <button class="dx-action-pill" id="btnOpenNowPlaying" title="Buka di Browser Asli (Safari/Chrome)">&#8599; Buka</button>
+        </div>
+    </div>
+
+    <!-- Scrollable Body / Feed Area -->
+    <div class="dx-body-content">
+        <!-- Search & URL Input Box -->
+        <div class="dx-search-wrap">
+            <div class="dx-search-box">
+                <span class="dx-search-icon">&#128269;</span>
+                <input type="text" id="searchInput" class="dx-search-input" 
+                       placeholder="Cari video / tutorial atau paste link YouTube..." 
+                       autocomplete="off" spellcheck="false">
+                <button type="button" class="dx-search-clear" id="btnClearSearch">&times;</button>
+                <button type="button" class="dx-search-btn" id="btnSearch">Cari</button>
+            </div>
+            <!-- Auto-complete Suggestions Dropdown -->
+            <div class="dx-suggestions-list" id="suggestionsList"></div>
+        </div>
+
+        <!-- Quick Categories (Fred Pelle Style) -->
+        <div class="dx-pills-row">
+            <button class="dx-pill active" data-query="premiere pro tutorial">🎓 Premiere</button>
+            <button class="dx-pill" data-query="lofi hip hop radio live">☕ Lo-Fi Beats</button>
+            <button class="dx-pill" data-query="motion graphics inspiration">🎬 Inspirasi</button>
+            <button class="dx-pill" data-query="after effects vfx tutorial">⚡ VFX</button>
+            <button class="dx-pill" data-query="cinematic sound effects">🔊 SFX</button>
+            <button class="dx-pill" data-mode="favorites">⭐ Favorit</button>
+            <button class="dx-pill" data-mode="history">🕒 Riwayat</button>
+        </div>
+
+        <!-- Section Heading & View Switcher -->
+        <div class="dx-section-header">
+            <span id="sectionTitle">Video Rekomendasi</span>
+            <div class="dx-view-toggles">
+                <button class="dx-view-btn active" id="btnViewGrid" title="Tampilan Grid">&#9638;</button>
+                <button class="dx-view-btn" id="btnViewList" title="Tampilan Baris">&#9776;</button>
+            </div>
+        </div>
+
+        <!-- Video Results Grid -->
+        <div class="dx-video-grid" id="videoGrid">
+            <!-- Populated dynamically via JS -->
+        </div>
+    </div>
+
+    <!-- Toast Notification -->
+    <div class="dx-toast" id="toastMessage"></div>
+
+    <!-- Scripts -->
+    <script src="js/CSInterface.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>
