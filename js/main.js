@@ -106,9 +106,27 @@
                     return res.end();
                 }
 
+                if (parsed.pathname === '/health') {
+                    res.writeHead(200, {
+                        'Content-Type': 'application/json; charset=utf-8',
+                        'Cache-Control': 'no-store',
+                        'Access-Control-Allow-Origin': '*'
+                    });
+                    return res.end(JSON.stringify({
+                        status: 'ok',
+                        service: 'DisplayX Player Service',
+                        port: PLAYER_PORT
+                    }));
+                }
+
                 if (parsed.pathname === '/player') {
                     const vidId = parsed.searchParams.get('v') || '';
                     const isLoop = parsed.searchParams.get('loop') === '1';
+                    const debugMode = parsed.searchParams.get('debug') === '1';
+                    // The no-cookie host is exposed only as a diagnostic alternative.
+                    const embedDomain = parsed.searchParams.get('host') === 'nocookie'
+                        ? 'www.youtube-nocookie.com'
+                        : 'www.youtube.com';
 
                     if (!/^[a-zA-Z0-9_-]{11}$/.test(vidId)) {
                         res.writeHead(400, { 'Content-Type': 'text/plain' });
@@ -118,9 +136,8 @@
                     // Serve a real localhost document containing the official YouTube
                     // embed. This gives the iframe a normal HTTP origin and a real
                     // Referer, instead of rewriting/proxying YouTube's player HTML.
-                    const origin = `http://127.0.0.1:${PLAYER_PORT}`;
                     const loopParams = isLoop ? `&loop=1&playlist=${vidId}` : '';
-                    const embedUrl = `https://www.youtube.com/embed/${vidId}?autoplay=1&playsinline=1&controls=1&rel=0${loopParams}`;
+                    const embedUrl = `https://${embedDomain}/embed/${vidId}?autoplay=1&playsinline=1&controls=1&rel=0${loopParams}`;
                     const playerHtml = `<!doctype html>
 <html lang="en">
 <head>
@@ -131,7 +148,7 @@
 <style>
 html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;color:#fff;font:13px -apple-system,BlinkMacSystemFont,sans-serif}
 #yt-player{position:absolute;inset:0;width:100%;height:100%;border:0;background:#000}
-#status{position:absolute;left:8px;right:8px;bottom:8px;padding:7px 9px;background:rgba(0,0,0,.82);color:#cbd5e1;font-size:11px;line-height:1.4;pointer-events:none;z-index:5}
+#status{position:absolute;left:8px;right:8px;bottom:8px;padding:9px 11px;background:rgba(8,12,20,.94);border:1px solid rgba(148,163,184,.35);border-radius:5px;color:#e2e8f0;font-size:11px;line-height:1.5;white-space:pre-line;pointer-events:none;z-index:5;display:none}
 </style>
 </head>
 <body>
@@ -142,21 +159,30 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;color:
   allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
   allowfullscreen
   referrerpolicy="origin"></iframe>
-<div id="status">Connecting to YouTube…</div>
+<div id="status"></div>
 <script>
 (function () {
     var frame = document.getElementById('yt-player');
     var statusEl = document.getElementById('status');
+    var debugMode = ${debugMode ? 'true' : 'false'};
     var timer = setTimeout(function () {
-        statusEl.textContent = 'YouTube is taking too long to respond. Check your internet connection, embedding permission, or Premiere CEP browser compatibility.';
-        statusEl.style.display = 'block';
+        showStatus('1. DisplayX local page: OK\\n2. YouTube iframe: no load event after 18 seconds.\\nThis can indicate a network, embedding, or CEP/CEF browser restriction.', true);
     }, 18000);
+
+    function showStatus(message, forceVisible) {
+        statusEl.textContent = message;
+        statusEl.style.display = (debugMode || forceVisible) ? 'block' : 'none';
+    }
+
+    if (debugMode) {
+        showStatus('1. DisplayX local page: OK\\n2. YouTube iframe: waiting for navigation event…\\nNote: iframe onload does not prove that video playback rendered.', true);
+    }
 
     frame.onload = function () {
         clearTimeout(timer);
-        // The YouTube page has been delivered. Any video-specific restrictions
-        // (private/deleted/embedding-disabled) are now shown by YouTube itself.
-        statusEl.style.display = 'none';
+        // Cross-origin iframe onload only confirms navigation; it cannot verify
+        // whether YouTube rendered its player or an internal error page.
+        showStatus('1. DisplayX local page: OK\\n2. YouTube iframe: navigation event received.\\n3. Playback: NOT VERIFIED.\\nIf this remains black, compare the same test URL in Chrome.', false);
         try {
             window.parent.postMessage({
                 source: 'displayx-youtube-player',
@@ -168,8 +194,7 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;color:
 
     frame.onerror = function () {
         clearTimeout(timer);
-        statusEl.textContent = 'Could not load the YouTube video frame. Check your connection or open the video in a browser.';
-        statusEl.style.display = 'block';
+        showStatus('1. DisplayX local page: OK\\n2. YouTube iframe: browser reported a load error.\\nCheck internet access and CEP/CEF compatibility.', true);
     };
 })();
 </script>
@@ -481,7 +506,7 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;color:
 
         let targetUrl;
         if (http) {
-            targetUrl = `http://127.0.0.1:${PLAYER_PORT}/player?v=${encodeURIComponent(id)}${isLooping ? '&loop=1' : ''}`;
+            targetUrl = `http://127.0.0.1:${PLAYER_PORT}/player?v=${encodeURIComponent(id)}${isLooping ? '&loop=1' : ''}&debug=1`;
         } else {
             // Fallback for environments without CEP Node integration.
             targetUrl = `https://www.youtube.com/embed/${id}?autoplay=1&playsinline=1&rel=0&controls=1${isLooping ? '&loop=1&playlist=' + id : ''}`;
