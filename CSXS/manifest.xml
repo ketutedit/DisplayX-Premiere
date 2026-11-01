@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<ExtensionManifest Version="7.0" ExtensionBundleId="com.displayx.panel" ExtensionBundleVersion="1.0.0"
+<ExtensionManifest Version="7.0" ExtensionBundleId="com.displayx.panel" ExtensionBundleVersion="1.1.4"
     ExtensionBundleName="DisplayX" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <ExtensionList>
-        <Extension Id="com.displayx.panel" Version="1.0.0" />
+        <Extension Id="com.displayx.panel" Version="1.1.4" />
     </ExtensionList>
     <ExecutionEnvironment>
         <HostList>
@@ -29,6 +29,7 @@
                         <Parameter>--disable-web-security</Parameter>
                         <Parameter>--allow-running-insecure-content</Parameter>
                         <Parameter>--autoplay-policy=no-user-gesture-required</Parameter>
+                        <Parameter>--enable-media-stream</Parameter>
                     </CEFCommandLine>
                 </Resources>
                 <Lifecycle>
