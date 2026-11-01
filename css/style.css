@@ -290,6 +290,24 @@ body {
     font-weight: 500;
 }
 
+/* Keep YouTube playback errors visible instead of leaving an unexplained black player. */
+.dx-player-loading.dx-player-error {
+    background: rgba(8, 10, 14, 0.96);
+}
+
+.dx-player-loading.dx-player-error .dx-spinner {
+    display: none;
+}
+
+.dx-player-loading.dx-player-error .dx-loading-text {
+    max-width: 88%;
+    color: #fca5a5;
+    font-size: 11px;
+    line-height: 1.5;
+    text-align: center;
+    white-space: normal;
+}
+
 /* Now Playing Info Bar */
 .dx-now-playing-bar {
     display: flex;
