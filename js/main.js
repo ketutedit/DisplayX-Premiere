@@ -30,9 +30,69 @@
 
     const csInterface = new CSInterface();
 
-    // Local HTTP Player Service (Reverse-Proxy for YouTube Embed with Valid Referer)
-    const PLAYER_PORT = 48292;
+    // Local HTTP origin for the official YouTube embed and thumbnail proxy
+    const PLAYER_PORT = 48293;
     let playerServer = null;
+    let playerLoadTimer = null;
+
+    // Proxy YouTube thumbnails through localhost so CEP/CEF does not need to
+    // load i.ytimg.com directly from a file:// extension origin.
+    function serveThumbnail(videoId, res) {
+        if (!https) {
+            res.writeHead(503, { 'Content-Type': 'text/plain' });
+            return res.end('Thumbnail service unavailable');
+        }
+
+        const variants = ['maxresdefault', 'sddefault', 'hqdefault', 'mqdefault', 'default'];
+
+        function tryVariant(index) {
+            if (res.finished) return;
+            if (index >= variants.length) {
+                if (!res.headersSent) {
+                    res.writeHead(404, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' });
+                    res.end('Thumbnail not found');
+                }
+                return;
+            }
+
+            const imagePath = `/vi/${videoId}/${variants[index]}.jpg`;
+            let advanced = false;
+            const next = () => {
+                if (advanced) return;
+                advanced = true;
+                tryVariant(index + 1);
+            };
+
+            const request = https.get({
+                hostname: 'i.ytimg.com',
+                path: imagePath,
+                headers: {
+                    'User-Agent': 'Mozilla/5.0',
+                    'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8'
+                }
+            }, (upstream) => {
+                if (upstream.statusCode !== 200) {
+                    upstream.resume();
+                    return next();
+                }
+
+                res.writeHead(200, {
+                    'Content-Type': upstream.headers['content-type'] || 'image/jpeg',
+                    'Cache-Control': 'public, max-age=86400',
+                    'X-Content-Type-Options': 'nosniff'
+                });
+                upstream.on('error', () => {
+                    if (!res.destroyed) res.destroy();
+                });
+                upstream.pipe(res);
+            });
+
+            request.on('error', next);
+            request.setTimeout(6000, () => request.destroy(new Error('Thumbnail request timed out')));
+        }
+
+        tryVariant(0);
+    }
 
     function startLocalPlayerServer() {
         if (playerServer || !http) return;
@@ -46,54 +106,118 @@
                     return res.end();
                 }
 
+                if (parsed.pathname === '/health') {
+                    res.writeHead(200, {
+                        'Content-Type': 'application/json; charset=utf-8',
+                        'Cache-Control': 'no-store',
+                        'Access-Control-Allow-Origin': '*'
+                    });
+                    return res.end(JSON.stringify({
+                        status: 'ok',
+                        service: 'DisplayX Player Service',
+                        version: '1.1.4',
+                        port: PLAYER_PORT
+                    }));
+                }
+
                 if (parsed.pathname === '/player') {
                     const vidId = parsed.searchParams.get('v') || '';
                     const isLoop = parsed.searchParams.get('loop') === '1';
-                    const loopParam = isLoop ? `&loop=1&playlist=${vidId}` : '';
+                    const debugMode = parsed.searchParams.get('debug') === '1';
+                    // The no-cookie host is exposed only as a diagnostic alternative.
+                    const embedDomain = parsed.searchParams.get('host') === 'nocookie'
+                        ? 'www.youtube-nocookie.com'
+                        : 'www.youtube.com';
 
-                    if (!vidId) {
+                    if (!/^[a-zA-Z0-9_-]{11}$/.test(vidId)) {
                         res.writeHead(400, { 'Content-Type': 'text/plain' });
-                        return res.end('Missing video id');
+                        return res.end('Invalid YouTube video id');
                     }
 
-                    // Direct reverse proxy from YouTube embed with valid Google Referer (Bypasses Error 153)
-                    const ytOpts = {
-                        hostname: 'www.youtube.com',
-                        path: `/embed/${vidId}?autoplay=1&playsinline=1&rel=0${loopParam}`,
-                        headers: {
-                            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-                            'Referer': 'https://www.google.com/',
-                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-                        }
-                    };
+                    // Serve a real localhost document containing the official YouTube
+                    // embed. This gives the iframe a normal HTTP origin and a real
+                    // Referer, instead of rewriting/proxying YouTube's player HTML.
+                    const loopParams = isLoop ? `&loop=1&playlist=${vidId}` : '';
+                    const embedUrl = `https://${embedDomain}/embed/${vidId}?autoplay=1&playsinline=1&controls=1&rel=0${loopParams}`;
+                    const playerHtml = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<meta name="referrer" content="origin">
+<title>DisplayX YouTube Player</title>
+<style>
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;color:#fff;font:13px -apple-system,BlinkMacSystemFont,sans-serif}
+#yt-player{position:absolute;inset:0;width:100%;height:100%;border:0;background:#000}
+#status{position:absolute;left:8px;right:8px;bottom:8px;padding:9px 11px;background:rgba(8,12,20,.94);border:1px solid rgba(148,163,184,.35);border-radius:5px;color:#e2e8f0;font-size:11px;line-height:1.5;white-space:pre-line;pointer-events:none;z-index:5;display:none}
+</style>
+</head>
+<body>
+<iframe
+  id="yt-player"
+  src="${embedUrl}"
+  title="YouTube video player"
+  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+  allowfullscreen
+  referrerpolicy="origin"></iframe>
+<div id="status"></div>
+<script>
+(function () {
+    var frame = document.getElementById('yt-player');
+    var statusEl = document.getElementById('status');
+    var debugMode = ${debugMode ? 'true' : 'false'};
+    var timer = setTimeout(function () {
+        showStatus('1. DisplayX local page: OK\\n2. YouTube iframe: no load event after 18 seconds.\\nThis can indicate a network, embedding, or CEP/CEF browser restriction.', true);
+    }, 18000);
 
-                    const proxyReq = https.get(ytOpts, (ytRes) => {
-                        let chunks = [];
-                        ytRes.on('data', c => chunks.push(c));
-                        ytRes.on('end', () => {
-                            let html = Buffer.concat(chunks).toString('utf-8');
-                            // Inject base href tag so all relative assets & scripts resolve to youtube.com
-                            if (html.includes('<head>')) {
-                                html = html.replace('<head>', '<head><base href="https://www.youtube.com/">');
-                            } else if (html.includes('<head ')) {
-                                html = html.replace(/<head[^>]*>/, '$&<base href="https://www.youtube.com/">');
-                            }
+    function showStatus(message, forceVisible) {
+        statusEl.textContent = message;
+        statusEl.style.display = (debugMode || forceVisible) ? 'block' : 'none';
+    }
 
-                            res.writeHead(200, {
-                                'Content-Type': 'text/html; charset=utf-8',
-                                'Access-Control-Allow-Origin': '*',
-                                'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-                                'Referrer-Policy': 'origin'
-                            });
-                            res.end(html);
-                        });
+    if (debugMode) {
+        showStatus('1. DisplayX local page: OK (build 1.1.4)\\n2. YouTube iframe: waiting for navigation event…\\nNote: iframe onload does not prove that video playback rendered.', true);
+    }
+
+    frame.onload = function () {
+        clearTimeout(timer);
+        // Cross-origin iframe onload only confirms navigation; it cannot verify
+        // whether YouTube rendered its player or an internal error page.
+        showStatus('1. DisplayX local page: OK\\n2. YouTube iframe: navigation event received.\\n3. Playback: NOT VERIFIED.\\nIf this remains black, compare the same test URL in Chrome.', false);
+        try {
+            window.parent.postMessage({
+                source: 'displayx-youtube-player',
+                type: 'frame_loaded',
+                videoId: ${JSON.stringify(vidId)}
+            }, '*');
+        } catch (e) {}
+    };
+
+    frame.onerror = function () {
+        clearTimeout(timer);
+        showStatus('1. DisplayX local page: OK\\n2. YouTube iframe: browser reported a load error.\\nCheck internet access and CEP/CEF compatibility.', true);
+    };
+})();
+</script>
+</body>
+</html>`
+
+                    res.writeHead(200, {
+                        'Content-Type': 'text/html; charset=utf-8',
+                        'Cache-Control': 'no-store',
+                        'Referrer-Policy': 'origin',
+                        'X-Content-Type-Options': 'nosniff'
                     });
+                    return res.end(playerHtml);
+                }
 
-                    proxyReq.on('error', (err) => {
-                        res.writeHead(500, { 'Content-Type': 'text/plain' });
-                        res.end('DisplayX Proxy Connection Error: ' + err.message);
-                    });
-                    return;
+                if (parsed.pathname === '/thumb') {
+                    const vidId = parsed.searchParams.get('v') || '';
+                    if (!/^[a-zA-Z0-9_-]{11}$/.test(vidId)) {
+                        res.writeHead(400, { 'Content-Type': 'text/plain' });
+                        return res.end('Invalid YouTube video id');
+                    }
+                    return serveThumbnail(vidId, res);
                 }
 
                 res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -166,7 +290,7 @@
 
     // State
     let currentVideo = null; // { id, title, channel, duration }
-    let playerMode = 'direct'; // 'direct' (HTML5 Video Stream via googlevideo) | 'embed' (YouTube Iframe Proxy)
+    let playerMode = 'embed'; // Use the official YouTube embedded player
     let isLooping = false;
     let isSearching = false;
     let lastDetectedClipboard = "";
@@ -288,41 +412,8 @@
     }
 
     // ==========================================
-    // STREAM EXTRACTOR & DUAL-MODE PLAYER CONTROLLER
+    // YOUTUBE PLAYER CONTROLLER
     // ==========================================
-    function getDirectStreamUrl(vidId, callback) {
-        if (!cp || !cp.spawn) {
-            return callback(new Error("child_process not available"));
-        }
-
-        const ytDlp = resolveYtDlp();
-        const targetUrl = `https://www.youtube.com/watch?v=${vidId}`;
-        const args = [
-            '-g',
-            '-f', '18/b[ext=mp4]/best',
-            '--no-warnings',
-            targetUrl
-        ];
-
-        let stdout = '';
-        let stderr = '';
-        const proc = cp.spawn(ytDlp, args, { env: getProcessEnv() });
-
-        proc.stdout.on('data', d => stdout += d.toString());
-        proc.stderr.on('data', d => stderr += d.toString());
-
-        proc.on('close', (code) => {
-            const streamUrl = stdout.trim().split('\n')[0];
-            if (code === 0 && streamUrl && streamUrl.startsWith('http')) {
-                callback(null, streamUrl);
-            } else {
-                callback(new Error(stderr || `yt-dlp exit ${code}`));
-            }
-        });
-
-        proc.on('error', (err) => callback(err));
-    }
-
     function showPlayerLoading(text) {
         if (playerLoading) {
             if (playerLoadingText) playerLoadingText.textContent = text || 'Memuat Video...';
@@ -330,8 +421,19 @@
         }
     }
 
+    function showPlayerError(message) {
+        if (!playerLoading) {
+            showToast(message, 8000);
+            return;
+        }
+        if (playerLoadingText) playerLoadingText.textContent = message;
+        playerLoading.classList.add('dx-player-error');
+        playerLoading.style.display = 'flex';
+    }
+
     function hidePlayerLoading() {
         if (playerLoading) {
+            playerLoading.classList.remove('dx-player-error');
             playerLoading.style.display = 'none';
         }
     }
@@ -355,92 +457,77 @@
         saveToHistory(currentVideo);
         highlightActiveCard(id);
 
-        if (requestedMode) {
-            playerMode = requestedMode;
-        }
-
-        if (playerMode === 'direct') {
-            loadDirectStream(id, title);
-        } else {
-            loadEmbedStream(id);
-        }
-    }
-
-    function loadDirectStream(id, title) {
-        showPlayerLoading("Menyiapkan stream video MP4...");
-        if (btnTogglePlayerMode) {
-            btnTogglePlayerMode.innerHTML = '🎬 Mode: MP4';
-            btnTogglePlayerMode.title = 'Sedang memutar stream direct MP4. Klik untuk ganti ke mode Embed YouTube.';
-        }
-
-        getDirectStreamUrl(id, (err, streamUrl) => {
-            if (err || !streamUrl) {
-                console.warn("Direct stream failed, falling back to Embed:", err ? err.message : "No stream");
-                showToast("Stream direct tidak tersedia, beralih ke Embed...");
-                loadEmbedStream(id);
-                return;
-            }
-
-            hidePlayerLoading();
-            if (playerFrame) {
-                playerFrame.style.display = 'none';
-                playerFrame.src = 'about:blank';
-            }
-            if (nativePlayer) {
-                nativePlayer.style.display = 'block';
-                nativePlayer.src = streamUrl;
-                nativePlayer.loop = isLooping;
-                nativePlayer.play().catch(e => {
-                    console.log("Autoplay notice:", e);
-                });
-            }
-            showToast(`Memutar (MP4): ${title.length > 25 ? title.substring(0, 25) + '...' : title}`);
-        });
+        // Use YouTube's official embedded player. Direct MP4 extraction is not used.
+        playerMode = 'embed';
+        loadEmbedStream(id);
     }
 
     function loadEmbedStream(id) {
-        hidePlayerLoading();
+        if (!id || !playerFrame) return;
+
+        playerMode = 'embed';
         if (nativePlayer) {
-            try { nativePlayer.pause(); } catch(e) {}
-            nativePlayer.src = '';
+            try { nativePlayer.pause(); } catch (e) {}
+            nativePlayer.removeAttribute('src');
+            try { nativePlayer.load(); } catch (e) {}
             nativePlayer.style.display = 'none';
         }
 
         if (btnTogglePlayerMode) {
-            btnTogglePlayerMode.innerHTML = '📺 Mode: Embed';
-            btnTogglePlayerMode.title = 'Sedang memutar mode Embed YouTube. Klik untuk ganti ke direct MP4.';
+            btnTogglePlayerMode.innerHTML = '📺 YouTube';
+            btnTogglePlayerMode.title = 'Menggunakan pemutar YouTube resmi';
         }
 
-        if (playerFrame) {
-            playerFrame.style.display = 'block';
-            let targetUrl = "";
-            if (http) {
-                targetUrl = `http://127.0.0.1:${PLAYER_PORT}/player?v=${id}${isLooping ? '&loop=1' : ''}`;
-            } else {
-                targetUrl = `https://www.youtube.com/embed/${id}?autoplay=1&playsinline=1&rel=0${isLooping ? '&loop=1&playlist=' + id : ''}`;
+        playerFrame.style.display = 'block';
+        showPlayerLoading('Menghubungkan ke YouTube...');
+
+        if (playerLoadTimer) {
+            clearTimeout(playerLoadTimer);
+            playerLoadTimer = null;
+        }
+
+        playerFrame.onload = () => {
+            // The local wrapper has loaded. Its own status overlay tracks the nested
+            // YouTube iframe so the parent panel does not cover the player.
+            if (playerLoadTimer) {
+                clearTimeout(playerLoadTimer);
+                playerLoadTimer = null;
             }
-            playerFrame.src = targetUrl;
+            hidePlayerLoading();
+        };
+
+        playerFrame.onerror = () => {
+            if (playerLoadTimer) {
+                clearTimeout(playerLoadTimer);
+                playerLoadTimer = null;
+            }
+            hidePlayerLoading();
+            showToast('Player YouTube gagal dimuat. Periksa koneksi internet.');
+        };
+
+        let targetUrl;
+        if (http) {
+            targetUrl = `http://127.0.0.1:${PLAYER_PORT}/player?v=${encodeURIComponent(id)}${isLooping ? '&loop=1' : ''}&debug=1`;
+        } else {
+            // Fallback for environments without CEP Node integration.
+            targetUrl = `https://www.youtube.com/embed/${id}?autoplay=1&playsinline=1&rel=0&controls=1${isLooping ? '&loop=1&playlist=' + id : ''}`;
         }
 
-        showToast(`Memutar (Embed): ${currentVideo ? (currentVideo.title.length > 25 ? currentVideo.title.substring(0, 25) + '...' : currentVideo.title) : 'Video'}`);
+        playerFrame.src = targetUrl;
+        playerLoadTimer = setTimeout(() => {
+            playerLoadTimer = null;
+            showPlayerError('YouTube belum merespons. Periksa koneksi, CEP/CEF browser, atau error embed YouTube.');
+        }, 18000);
     }
 
     function togglePlayerMode() {
-        if (!currentVideo || !currentVideo.id) {
-            playerMode = (playerMode === 'direct') ? 'embed' : 'direct';
-            if (btnTogglePlayerMode) {
-                btnTogglePlayerMode.innerHTML = playerMode === 'direct' ? '🎬 Mode: MP4' : '📺 Mode: Embed';
-            }
-            showToast(`Mode pemutar diubah ke: ${playerMode === 'direct' ? 'Direct MP4' : 'YouTube Embed'}`);
-            return;
-        }
-
-        if (playerMode === 'direct') {
-            playerMode = 'embed';
+        // The player intentionally stays on YouTube's official embed mode.
+        // The button now acts as a convenient reload for the current video.
+        if (currentVideo && currentVideo.id) {
             loadEmbedStream(currentVideo.id);
+            showToast('Memuat ulang pemutar YouTube...');
         } else {
-            playerMode = 'direct';
-            loadDirectStream(currentVideo.id, currentVideo.title);
+            showToast('Pilih video terlebih dahulu.');
         }
     }
 
@@ -725,14 +812,14 @@
     function renderVideoCards(items) {
         videoGrid.innerHTML = items.map(item => {
             const isPlaying = currentVideo && currentVideo.id === item.id;
-            const thumbUrl = `https://i.ytimg.com/vi/${item.id}/mqdefault.jpg`;
+            const thumbUrl = http ? `http://127.0.0.1:${PLAYER_PORT}/thumb?v=${encodeURIComponent(item.id)}` : `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`;
             const viewsText = formatViewCount(item.views);
 
             return `
                 <div class="dx-card ${isPlaying ? 'playing' : ''}" data-id="${item.id}" 
                      onclick="window.DisplayX.play('${item.id}', '${escapeHtml(item.title)}', '${escapeHtml(item.channel)}', '${escapeHtml(item.duration)}')">
                     <div class="dx-thumb-wrap">
-                        <img src="${thumbUrl}" alt="${escapeHtml(item.title)}" loading="lazy" onerror="this.src='https://i.ytimg.com/vi/${item.id}/default.jpg'">
+                        <img src="${thumbUrl}" data-video-id="${item.id}" data-fallback-index="0" alt="${escapeHtml(item.title)}" loading="lazy" onerror="window.DisplayX.thumbnailFallback(this)">
                         ${item.duration ? `<span class="dx-dur-badge">${escapeHtml(item.duration)}</span>` : ''}
                         <div class="dx-play-overlay">
                             <div class="dx-play-circle">&#9658;</div>
@@ -754,6 +841,28 @@
     window.DisplayX = {
         play: function (id, title, channel, duration) {
             playVideo(id, title, channel, duration);
+        },
+        thumbnailFallback: function (img) {
+            if (!img) return;
+            const id = img.getAttribute('data-video-id') || '';
+            if (!/^[a-zA-Z0-9_-]{11}$/.test(id)) {
+                img.onerror = null;
+                return;
+            }
+
+            const fallbacks = [
+                `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
+                `https://i.ytimg.com/vi/${id}/mqdefault.jpg`,
+                `https://i.ytimg.com/vi/${id}/default.jpg`
+            ];
+            const index = Number(img.getAttribute('data-fallback-index') || 0);
+            if (index < fallbacks.length) {
+                img.setAttribute('data-fallback-index', String(index + 1));
+                img.src = fallbacks[index];
+            } else {
+                img.onerror = null;
+                img.style.visibility = 'hidden';
+            }
         }
     };
 
