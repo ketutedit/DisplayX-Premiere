@@ -444,9 +444,7 @@ iframe{display:block;width:100%;height:100%;border:0;background:#000}
         playerLoadTimer = setTimeout(() => {
             playerLoadTimer = null;
             hidePlayerLoading();
-            if (!http) {
-                showToast('Local player service tidak tersedia. Pemutaran embed mungkin dibatasi CEP.');
-            }
+            showToast('YouTube memuat terlalu lama. Periksa koneksi atau buka video di browser.');
         }, 12000);
     }
 
