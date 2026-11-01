@@ -94,6 +94,141 @@
         tryVariant(0);
     }
 
+    // Fetch the IFrame API through Node.js and re-serve it from localhost.
+    // Some CEP/CEF builds cannot load this script directly over YouTube HTTPS.
+    function serveYouTubeApi(res, redirectCount) {
+        if (!https) {
+            res.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8' });
+            return res.end('DisplayX: Node HTTPS module is unavailable.');
+        }
+
+        const target = 'https://www.youtube.com/iframe_api';
+        const options = {
+            hostname: 'www.youtube.com',
+            path: '/iframe_api',
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.9'
+            }
+        };
+
+        const request = https.get(options, (upstream) => {
+            const status = Number(upstream.statusCode || 0);
+
+            if (status >= 300 && status < 400 && upstream.headers.location) {
+                upstream.resume();
+                if ((redirectCount || 0) >= 4) {
+                    res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
+                    return res.end('DisplayX: Too many redirects while requesting YouTube IFrame API.');
+                }
+                let redirectUrl;
+                try {
+                    redirectUrl = new URL(upstream.headers.location, target);
+                } catch (e) {
+                    res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
+                    return res.end('DisplayX: Invalid redirect from YouTube IFrame API.');
+                }
+                if (redirectUrl.protocol !== 'https:' ||
+                    !(redirectUrl.hostname === 'youtube.com' || redirectUrl.hostname.endsWith('.youtube.com'))) {
+                    res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
+                    return res.end('DisplayX: YouTube IFrame API redirected to an unexpected host.');
+                }
+                return serveYouTubeApiUrl(redirectUrl, res, (redirectCount || 0) + 1);
+            }
+
+            if (status !== 200) {
+                let body = '';
+                upstream.setEncoding('utf8');
+                upstream.on('data', chunk => {
+                    if (body.length < 1200) body += chunk;
+                });
+                upstream.on('end', () => {
+                    if (res.headersSent) return;
+                    res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
+                    res.end('DisplayX: YouTube IFrame API returned HTTP ' + status + (body ? '. ' + body.slice(0, 500) : '.'));
+                });
+                return;
+            }
+
+            res.writeHead(200, {
+                'Content-Type': upstream.headers['content-type'] || 'application/javascript; charset=utf-8',
+                'Cache-Control': 'public, max-age=3600',
+                'Referrer-Policy': 'origin',
+                'X-Content-Type-Options': 'nosniff'
+            });
+            upstream.on('error', (error) => {
+                console.warn('DisplayX YouTube API proxy stream error:', error.message);
+                if (!res.destroyed) res.destroy();
+            });
+            upstream.pipe(res);
+        });
+
+        request.on('error', (error) => {
+            console.warn('DisplayX YouTube API proxy request failed:', error.message);
+            if (!res.headersSent) {
+                res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
+                res.end('DisplayX: Could not reach YouTube IFrame API from Node.js: ' + error.message);
+            }
+        });
+        request.setTimeout(12000, () => request.destroy(new Error('YouTube IFrame API request timed out')));
+    }
+
+    function serveYouTubeApiUrl(targetUrl, res, redirectCount) {
+        const request = https.get(targetUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.9'
+            }
+        }, (upstream) => {
+            const status = Number(upstream.statusCode || 0);
+            if (status >= 300 && status < 400 && upstream.headers.location) {
+                upstream.resume();
+                if (redirectCount >= 4) {
+                    res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
+                    return res.end('DisplayX: Too many redirects while requesting YouTube IFrame API.');
+                }
+                let nextUrl;
+                try {
+                    nextUrl = new URL(upstream.headers.location, targetUrl);
+                } catch (e) {
+                    res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
+                    return res.end('DisplayX: Invalid redirect from YouTube IFrame API.');
+                }
+                if (nextUrl.protocol !== 'https:' ||
+                    !(nextUrl.hostname === 'youtube.com' || nextUrl.hostname.endsWith('.youtube.com'))) {
+                    res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
+                    return res.end('DisplayX: YouTube IFrame API redirected to an unexpected host.');
+                }
+                return serveYouTubeApiUrl(nextUrl, res, redirectCount + 1);
+            }
+            if (status !== 200) {
+                upstream.resume();
+                res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
+                return res.end('DisplayX: YouTube IFrame API returned HTTP ' + status + '.');
+            }
+            res.writeHead(200, {
+                'Content-Type': upstream.headers['content-type'] || 'application/javascript; charset=utf-8',
+                'Cache-Control': 'public, max-age=3600',
+                'Referrer-Policy': 'origin',
+                'X-Content-Type-Options': 'nosniff'
+            });
+            upstream.on('error', (error) => {
+                console.warn('DisplayX YouTube API proxy stream error:', error.message);
+                if (!res.destroyed) res.destroy();
+            });
+            upstream.pipe(res);
+        });
+        request.on('error', (error) => {
+            if (!res.headersSent) {
+                res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
+                res.end('DisplayX: Could not reach YouTube IFrame API from Node.js: ' + error.message);
+            }
+        });
+        request.setTimeout(12000, () => request.destroy(new Error('YouTube IFrame API request timed out')));
+    }
+
     function startLocalPlayerServer() {
         if (playerServer || !http) return;
         try {
@@ -218,11 +353,14 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;color:
     };
 
     var apiScript = document.createElement('script');
-    apiScript.src = 'https://www.youtube.com/iframe_api';
+    apiScript.src = LOCAL_ORIGIN + '/youtube-iframe-api.js';
     apiScript.onerror = function () {
         if (readyTimer) clearTimeout(readyTimer);
-        status('Could not load YouTube IFrame API. Check network or CEP browser compatibility.');
-        report('api_error', { message: 'Failed to load https://www.youtube.com/iframe_api' });
+        status('DisplayX could not load the YouTube API through its local service. Reopen the panel and inspect the CEP console for the proxy HTTP error.');
+        report('api_error', {
+            message: 'Failed to load the locally proxied YouTube IFrame API.',
+            endpoint: apiScript.src
+        });
     };
     document.head.appendChild(apiScript);
 
@@ -242,6 +380,10 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;color:
                         'X-Content-Type-Options': 'nosniff'
                     });
                     return res.end(playerHtml);
+                }
+
+                if (parsed.pathname === '/youtube-iframe-api.js') {
+                    return serveYouTubeApi(res, 0);
                 }
 
                 if (parsed.pathname === '/thumb') {
