@@ -19,6 +19,7 @@ DisplayX uses YouTube's standard embedded player. It does not extract direct `go
 When CEP Node integration is available, the extension starts a small HTTP server bound only to `127.0.0.1:48293`:
 
 - `/player?v=VIDEO_ID` serves a lightweight local HTML page that initializes the official YouTube IFrame Player API. The local page has a normal HTTP origin and sets the matching `origin` parameter and `Referrer-Policy`.
+- `/youtube-iframe-api.js` retrieves the YouTube IFrame API using Node.js HTTPS and serves it back from localhost. This helps CEP/CEF builds that fail to load the API script directly from YouTube.
 - Player readiness, buffering, and YouTube embed errors are reported back to the extension. Errors such as 101/150 (embedding disabled) and 153 (missing HTTP Referer/client identity) are shown in the player area instead of leaving an unexplained black screen.
 - `/thumb?v=VIDEO_ID` retrieves a thumbnail from `i.ytimg.com` and tries `maxresdefault`, `sddefault`, `hqdefault`, `mqdefault`, and `default` in order. This provides a same-origin image URL to CEP/CEF and reduces blank thumbnail cards.
 
