@@ -18,7 +18,8 @@ DisplayX uses YouTube's standard embedded player. It does not extract direct `go
 
 When CEP Node integration is available, the extension starts a small HTTP server bound only to `127.0.0.1:48293`:
 
-- `/player?v=VIDEO_ID` serves a lightweight local HTML page containing the official YouTube embed. The local page has a normal HTTP origin and sets the matching `origin` parameter and `Referrer-Policy` for the embedded player.
+- `/player?v=VIDEO_ID` serves a lightweight local HTML page that initializes the official YouTube IFrame Player API. The local page has a normal HTTP origin and sets the matching `origin` parameter and `Referrer-Policy`.
+- Player readiness, buffering, and YouTube embed errors are reported back to the extension. Errors such as 101/150 (embedding disabled) and 153 (missing HTTP Referer/client identity) are shown in the player area instead of leaving an unexplained black screen.
 - `/thumb?v=VIDEO_ID` retrieves a thumbnail from `i.ytimg.com` and tries `maxresdefault`, `sddefault`, `hqdefault`, `mqdefault`, and `default` in order. This provides a same-origin image URL to CEP/CEF and reduces blank thumbnail cards.
 
 The server listens on loopback only; it is not exposed to the local network.
@@ -35,4 +36,5 @@ The server listens on loopback only; it is not exposed to the local network.
 - Private, deleted, age-restricted, region-restricted, or embedding-disabled videos may not play inside the extension. Use **Open in Browser** for those videos.
 - Some thumbnail sizes are not provided for every video; the local thumbnail route automatically tries smaller alternatives.
 - The YouTube player is controlled by YouTube's own embedded-player UI and availability rules.
+- Premiere's embedded Chromium/CEP runtime must be compatible with the current YouTube IFrame Player API. If the API reports an error, the player overlay displays the reported code/message to help identify whether the cause is video restrictions, missing referrer identity, or browser compatibility.
 - CEP Node integration must be enabled by the extension manifest for the local player and thumbnail service to run.
