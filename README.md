@@ -25,6 +25,20 @@ When CEP Node integration is available, the extension starts a small HTTP server
 
 The server listens on loopback only; it is not exposed to the local network.
 
+## Playback Diagnostics (v1.1.4)
+
+When the extension is open in Premiere Pro, open this local health URL in Chrome:
+
+`http://127.0.0.1:48293/health`
+
+A working local server returns JSON with `"status":"ok"`.
+
+To compare the player outside CEP, copy the 11-character YouTube video ID and open:
+
+`http://127.0.0.1:48293/player?v=VIDEO_ID&debug=1`
+
+Replace `VIDEO_ID` with the selected video's ID. The diagnostic overlay distinguishes the local DisplayX page from the YouTube iframe navigation event. An iframe load event alone does not prove the video rendered. To test YouTube's privacy-enhanced embed host, append `&host=nocookie` to the URL.
+
 ## Search
 
 - The primary search engine requests YouTube search results over HTTPS and parses the page's initial video data.
