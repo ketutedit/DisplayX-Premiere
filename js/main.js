@@ -97,7 +97,7 @@
     function startLocalPlayerServer() {
         if (playerServer || !http) return;
         try {
-            playerServer = http.createServer((req, res) => {
+            playerServer = http.createServer(async (req, res) => {
                 let parsed;
                 try {
                     parsed = new URL(req.url, `http://127.0.0.1:${PLAYER_PORT}`);
@@ -165,6 +165,46 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                         'X-Content-Type-Options': 'nosniff'
                     });
                     return res.end(playerHtml);
+                }
+
+                if (parsed.pathname === '/stream') {
+                    const vidId = parsed.searchParams.get('v') || '';
+                    if (!/^[a-zA-Z0-9_-]{11}$/.test(vidId)) {
+                        res.writeHead(400, { 'Content-Type': 'text/plain' });
+                        return res.end('Invalid YouTube video id');
+                    }
+                    try {
+                        const directUrl = await resolveStreamUrl(vidId);
+                        const target = new URL(directUrl);
+                        const reqHeaders = { 'User-Agent': 'curl/8.7.1', 'Accept': '*/*' };
+                        if (req.headers.range) reqHeaders['Range'] = req.headers.range;
+                        const upstream = https.request({
+                            hostname: target.hostname,
+                            path: target.pathname + target.search,
+                            method: 'GET',
+                            headers: reqHeaders
+                        }, (upRes) => {
+                            const outHeaders = {
+                                'Content-Type': upRes.headers['content-type'] || 'video/mp4',
+                                'Accept-Ranges': 'bytes',
+                                'Access-Control-Allow-Origin': '*'
+                            };
+                            if (upRes.headers['content-range']) outHeaders['Content-Range'] = upRes.headers['content-range'];
+                            if (upRes.headers['content-length']) outHeaders['Content-Length'] = upRes.headers['content-length'];
+                            res.writeHead(upRes.statusCode, outHeaders);
+                            upRes.pipe(res);
+                        });
+                        upstream.on('error', (err) => {
+                            if (!res.headersSent) res.writeHead(502);
+                            res.end('Upstream stream error: ' + err.message);
+                        });
+                        req.on('close', () => { try { upstream.destroy(); } catch (e) {} });
+                        upstream.end();
+                    } catch (err) {
+                        res.writeHead(500, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
+                        res.end('Stream error: ' + err.message);
+                    }
+                    return;
                 }
 
                 if (parsed.pathname === '/thumb') {
@@ -340,6 +380,29 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         return '/opt/homebrew/bin/yt-dlp';
     }
 
+    const streamUrlCache = new Map();
+    function resolveStreamUrl(videoId) {
+        return new Promise((resolve, reject) => {
+            if (streamUrlCache.has(videoId)) {
+                const entry = streamUrlCache.get(videoId);
+                if (Date.now() - entry.time < 15 * 60 * 1000) {
+                    return resolve(entry.url);
+                }
+            }
+            if (!cp) return reject(new Error("child_process not available"));
+            const ytDlp = resolveYtDlp();
+            const args = ['--force-ipv4', '-g', '-f', '18/22/b[ext=mp4]/best[ext=mp4]/best', `https://www.youtube.com/watch?v=${videoId}`];
+            const env = getProcessEnv();
+            cp.execFile(ytDlp, args, { env, timeout: 20000 }, (err, stdout, stderr) => {
+                if (err) return reject(new Error(stderr || err.message));
+                const url = stdout.trim().split('\n')[0].trim();
+                if (!url || !url.startsWith('http')) return reject(new Error("Invalid stream URL"));
+                streamUrlCache.set(videoId, { url, time: Date.now() });
+                resolve(url);
+            });
+        });
+    }
+
     function extractYouTubeId(url) {
         if (!url || typeof url !== 'string') return null;
         const clean = url.trim();
@@ -420,61 +483,28 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     }
 
     function loadEmbedStream(id) {
-        if (!id || !playerFrame) return;
+        if (!id || !nativePlayer) return;
 
-        playerMode = 'embed';
-        if (nativePlayer) {
-            try { nativePlayer.pause(); } catch (e) {}
-            nativePlayer.removeAttribute('src');
-            try { nativePlayer.load(); } catch (e) {}
-            nativePlayer.style.display = 'none';
+        playerMode = 'native';
+        if (playerFrame) {
+            playerFrame.style.display = 'none';
+            playerFrame.src = 'about:blank';
         }
 
-        if (btnTogglePlayerMode) {
-            btnTogglePlayerMode.innerHTML = '📺 YouTube';
-            btnTogglePlayerMode.title = 'Menggunakan pemutar YouTube resmi';
-        }
+        nativePlayer.style.display = 'block';
+        showPlayerLoading('Menyiapkan stream video...');
 
-        playerFrame.style.display = 'block';
-        showPlayerLoading('Menghubungkan ke YouTube...');
-
-        if (playerLoadTimer) {
-            clearTimeout(playerLoadTimer);
-            playerLoadTimer = null;
-        }
-
-        playerFrame.onload = () => {
-            // The local wrapper has loaded. Its own status overlay tracks the nested
-            // YouTube iframe so the parent panel does not cover the player.
-            if (playerLoadTimer) {
-                clearTimeout(playerLoadTimer);
-                playerLoadTimer = null;
-            }
+        nativePlayer.onplaying = () => hidePlayerLoading();
+        nativePlayer.oncanplay = () => hidePlayerLoading();
+        nativePlayer.onerror = (e) => {
             hidePlayerLoading();
+            showToast('Gagal memutar video. Coba video lain.');
         };
 
-        playerFrame.onerror = () => {
-            if (playerLoadTimer) {
-                clearTimeout(playerLoadTimer);
-                playerLoadTimer = null;
-            }
-            hidePlayerLoading();
-            showToast('Player YouTube gagal dimuat. Periksa koneksi internet.');
-        };
-
-        let targetUrl;
-        if (http) {
-            targetUrl = `http://127.0.0.1:${PLAYER_PORT}/player?v=${encodeURIComponent(id)}${isLooping ? '&loop=1' : ''}`;
-        } else {
-            // Fallback for environments without CEP Node integration.
-            targetUrl = `https://www.youtube.com/embed/${id}?autoplay=1&playsinline=1&rel=0&controls=1${isLooping ? '&loop=1&playlist=' + id : ''}`;
-        }
-
-        playerFrame.src = targetUrl;
-        playerLoadTimer = setTimeout(() => {
-            playerLoadTimer = null;
-            showPlayerError('YouTube belum merespons. Periksa koneksi, CEP/CEF browser, atau error embed YouTube.');
-        }, 18000);
+        nativePlayer.src = `http://127.0.0.1:${PLAYER_PORT}/stream?v=${encodeURIComponent(id)}`;
+        nativePlayer.load();
+        const p = nativePlayer.play();
+        if (p) p.catch(() => {});
     }
 
     function togglePlayerMode() {
@@ -676,6 +706,37 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         req.setTimeout(7000, () => req.destroy(new Error("Timeout")));
     }
 
+    // Engine 1: YouTube Data API v3 (Fastest & Most Reliable)
+    const YOUTUBE_API_KEY = 'AIzaSyAvX-Y68jZ2vh3qjHhgPV95m27-A0W8MCY';
+    function searchYouTubeApi(query, callback) {
+        if (!https) return callback(new Error("Node https not available"));
+        const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=15&q=${encodeURIComponent(query)}&type=video&regionCode=ID&key=${YOUTUBE_API_KEY}`;
+        const req = https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
+            let data = '';
+            res.on('data', c => data += c);
+            res.on('end', () => {
+                if (res.statusCode !== 200) return callback(new Error(`API Error HTTP ${res.statusCode}`));
+                try {
+                    const parsed = JSON.parse(data);
+                    if (parsed.items && parsed.items.length > 0) {
+                        const items = parsed.items.map(item => ({
+                            id: item.id.videoId,
+                            title: item.snippet.title,
+                            channel: item.snippet.channelTitle,
+                            duration: '',
+                            views: ''
+                        }));
+                        callback(null, items);
+                    } else {
+                        callback(new Error("No items"));
+                    }
+                } catch (e) { callback(e); }
+            });
+        });
+        req.on('error', callback);
+        req.setTimeout(8000, () => req.destroy(new Error("Timeout")));
+    }
+
     // Engine 2: Local yt-dlp Process Search (Fallback with getProcessEnv)
     function searchYouTubeYtDlp(query, callback) {
         if (!cp || !cp.spawn) {
@@ -684,6 +745,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
         const ytDlp = resolveYtDlp();
         const args = [
+            '--force-ipv4',
             '--flat-playlist',
             '--no-warnings',
             '--print', '%(id)s||%(title)s||%(duration_string)s||%(uploader)s||%(view_count)s',
@@ -738,30 +800,38 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         showSkeletonLoading();
         sectionTitle.textContent = `Hasil Pencarian: "${clean}"`;
 
-        // Try Fast Direct Engine first
-        searchYouTubeDirect(clean, (err, items) => {
+        // Attempt 1: YouTube Data API v3 (Instant)
+        searchYouTubeApi(clean, (err, items) => {
             if (!err && items && items.length > 0) {
                 isSearching = false;
                 renderVideoCards(items);
                 return;
             }
 
-            // Fallback to yt-dlp engine with full environment
-            console.log("Direct search fallback to yt-dlp:", err ? err.message : "No items");
-            searchYouTubeYtDlp(clean, (err2, items2) => {
-                isSearching = false;
+            // Attempt 2: Direct Search (Scrape fallback)
+            searchYouTubeDirect(clean, (err2, items2) => {
                 if (!err2 && items2 && items2.length > 0) {
+                    isSearching = false;
                     renderVideoCards(items2);
                     return;
                 }
 
-                // If both engines failed, display clean error
-                videoGrid.innerHTML = `
-                    <div style="grid-column: 1 / -1; padding: 30px; text-align: center; color: var(--text-muted);">
-                        Gagal memuat hasil pencarian atau koneksi terputus.<br>
-                        <small style="color: var(--text-sub);">${err2 ? err2.message : (err ? err.message : '')}</small>
-                    </div>
-                `;
+                // Attempt 3: Local yt-dlp Process Search
+                searchYouTubeYtDlp(clean, (err3, items3) => {
+                    isSearching = false;
+                    if (!err3 && items3 && items3.length > 0) {
+                        renderVideoCards(items3);
+                        return;
+                    }
+
+                    // If all engines failed, display clean error
+                    videoGrid.innerHTML = `
+                        <div style="grid-column: 1 / -1; padding: 30px; text-align: center; color: var(--text-muted);">
+                            Gagal memuat hasil pencarian atau koneksi terputus.<br>
+                            <small style="color: var(--text-sub);">${err3 ? err3.message : (err ? err.message : '')}</small>
+                        </div>
+                    `;
+                });
             });
         });
     }
