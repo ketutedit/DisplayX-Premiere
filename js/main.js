@@ -177,10 +177,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                     try {
                         const directUrl = await resolveStreamUrl(vidId, quality);
                         const target = new URL(directUrl);
-                        const reqHeaders = {
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                            'Accept': '*/*'
-                        };
+                        const reqHeaders = { 'User-Agent': 'curl/8.7.1', 'Accept': '*/*' };
                         if (req.headers.range) reqHeaders['Range'] = req.headers.range;
                         const upstream = https.request({
                             hostname: target.hostname,
@@ -417,9 +414,6 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                 formatRule = '18/b[ext=mp4][height<=480]/best[height<=480]';
             } else if (quality === '360') {
                 formatRule = '18/b[ext=mp4][height<=360]';
-            } else {
-                // auto or any fallback
-                formatRule = '22/18/b[ext=mp4]/best[ext=mp4]/best';
             }
 
             const args = ['--force-ipv4', '-g', '-f', formatRule, `https://www.youtube.com/watch?v=${videoId}`];
@@ -513,7 +507,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         loadEmbedStream(id);
     }
 
-    function loadEmbedStream(id, quality = currentQuality, seekTime = null, isFallback = false) {
+    function loadEmbedStream(id, quality = currentQuality, seekTime = null) {
         if (!id || !nativePlayer) return;
 
         playerMode = 'native';
@@ -527,73 +521,27 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         nativePlayer.style.display = 'block';
         showPlayerLoading('Menyiapkan stream video...');
 
-        // 1. Detach old handlers to prevent abort / reload loop
-        nativePlayer.onplaying = null;
-        nativePlayer.oncanplay = null;
-        nativePlayer.onerror = null;
-        nativePlayer.onloadedmetadata = null;
-
-        // 2. Pause existing media
-        try {
-            nativePlayer.pause();
-        } catch (e) {}
-
-        let pendingSeek = (seekTime !== null && seekTime > 0) ? seekTime : null;
-
-        nativePlayer.onloadedmetadata = () => {
-            if (pendingSeek !== null) {
-                try {
-                    nativePlayer.currentTime = pendingSeek;
-                } catch (e) {}
-                pendingSeek = null; // Clear so subsequent play/pause does not jump
-            }
-            try {
-                nativePlayer.playbackRate = currentSpeed;
-            } catch (e) {}
-        };
-
-        nativePlayer.oncanplay = () => {
-            hidePlayerLoading();
-        };
-
         nativePlayer.onplaying = () => {
             hidePlayerLoading();
+            if (seekTime !== null && seekTime > 0) {
+                try { nativePlayer.currentTime = seekTime; } catch (e) {}
+            }
+            try { nativePlayer.playbackRate = currentSpeed; } catch (e) {}
         };
-
+        nativePlayer.oncanplay = () => hidePlayerLoading();
         nativePlayer.onerror = (e) => {
             hidePlayerLoading();
-            const err = nativePlayer.error;
-            // Ignore routine aborts when switching source
-            if (err && err.code === 1) { // 1 = MEDIA_ERR_ABORTED
-                return;
-            }
-            console.warn('Native player error code:', err ? err.code : 'unknown');
-
-            // Fallback to 'auto' at most ONCE
-            if (!isFallback && quality !== 'auto') {
-                showToast('Kualitas dipilih tidak dapat dimuat. Beralih ke Auto...', 3500);
-                if (currentQualityLabel) currentQualityLabel.textContent = 'Auto';
-                document.querySelectorAll('#qualityMenu .dx-dropdown-item').forEach(item => {
-                    item.classList.toggle('active', item.getAttribute('data-quality') === 'auto');
-                });
-                loadEmbedStream(id, 'auto', seekTime, true);
-            } else {
-                showPlayerError('Gagal memutar video. Coba refresh atau pilih video lain.');
+            showToast('Gagal memuat kualitas ini. Mencoba kualitas standar...');
+            if (quality !== 'auto') {
+                loadEmbedStream(id, 'auto', seekTime);
             }
         };
 
         const streamUrl = `http://127.0.0.1:${PLAYER_PORT}/stream?v=${encodeURIComponent(id)}&q=${encodeURIComponent(quality)}`;
         nativePlayer.src = streamUrl;
         nativePlayer.load();
-
         const p = nativePlayer.play();
-        if (p && typeof p.catch === 'function') {
-            p.catch((err) => {
-                if (err && err.name !== 'AbortError') {
-                    console.log('Play notice:', err.message);
-                }
-            });
-        }
+        if (p) p.catch(() => {});
     }
 
     function changeQuality(newQuality, label) {
@@ -607,7 +555,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         });
 
         showOsd(`⚙️ Kualitas: ${label}`);
-        loadEmbedStream(currentVideo.id, newQuality, prevTime, false);
+        loadEmbedStream(currentVideo.id, newQuality, prevTime);
     }
 
     function changeSpeed(newSpeed, label) {
@@ -1375,8 +1323,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
             e.preventDefault();
             if (nativePlayer) {
                 if (nativePlayer.paused) {
-                    const p = nativePlayer.play();
-                    if (p && typeof p.catch === 'function') p.catch(() => {});
+                    nativePlayer.play();
                     showOsd('▶ Play');
                 } else {
                     nativePlayer.pause();
