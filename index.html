@@ -36,8 +36,9 @@
                 allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" 
                 allowfullscreen></iframe>
 
-        <!-- Direct Native HTML5 Video Player (Zero Embed Blocks) -->
-        <video id="nativePlayer" class="dx-player-frame" controls autoplay style="display: none;"></video>
+        <!-- Direct Native HTML5 Video Player + Synchronized Audio (Zero-Disk WebM VP9 + Opus Stream) -->
+        <video id="nativePlayer" class="dx-player-frame" controls playsinline autoplay style="display: none;"></video>
+        <audio id="nativeAudio" preload="auto" style="display: none;"></audio>
 
         <!-- On-Screen Display Badge (Frame Step & Shortcuts) -->
         <div class="dx-player-osd" id="playerOsd" style="display: none;"></div>
@@ -70,12 +71,18 @@
             <button class="dx-action-pill" id="btnStepBack" title="Mundur 1 Frame (Keyboard: ,)">⏮️ Frame</button>
             <button class="dx-action-pill" id="btnStepForward" title="Maju 1 Frame (Keyboard: .)">Frame ⏭️</button>
 
+            <!-- Stream Engine Toggle (Direct Pro vs Embed) -->
+            <button class="dx-action-pill" id="btnToggleEngine" title="Ganti Mode Stream: ⚡ Pro Stream (WebM RAM) / 🌐 Embed 4K">⚡ Pro Stream</button>
+
             <!-- Quality Settings Dropdown -->
             <div class="dx-dropdown-wrap">
                 <button class="dx-action-pill" id="btnQuality" title="Pengaturan Kualitas Video">⚙️ <span id="currentQualityLabel">Auto</span></button>
                 <div class="dx-dropdown-menu" id="qualityMenu" style="display: none;">
-                    <div class="dx-dropdown-item active" data-quality="auto">✨ Auto (Best)</div>
-                    <div class="dx-dropdown-item" data-quality="720">720p HD</div>
+                    <div class="dx-dropdown-item active" data-quality="auto">✨ Auto (Resolusi Terbaik)</div>
+                    <div class="dx-dropdown-item" data-quality="2160">📺 4K UHD (2160p)</div>
+                    <div class="dx-dropdown-item" data-quality="1440">📺 2K QHD (1440p)</div>
+                    <div class="dx-dropdown-item" data-quality="1080">📺 1080p Full HD</div>
+                    <div class="dx-dropdown-item" data-quality="720">📺 720p HD</div>
                     <div class="dx-dropdown-item" data-quality="480">480p</div>
                     <div class="dx-dropdown-item" data-quality="360">360p (Hemat Data)</div>
                 </div>

@@ -94,6 +94,101 @@
         tryVariant(0);
     }
 
+    // In-Memory Stream Registry & 6MB Range Chunking Proxy (Zero-Disk Storage Architecture)
+    const streamRegistry = {};
+    const MAX_RAM_CHUNK = 6 * 1024 * 1024; // 6MB in RAM to prevent YouTube speed throttling
+
+    function forwardRangeRequest(entry, clientReq, clientRes, redirectCount = 0) {
+        if (redirectCount > 5) {
+            clientRes.writeHead(502);
+            return clientRes.end("Too many redirects");
+        }
+
+        const targetUrl = entry.currentUrl || entry.url;
+        let parsedTarget;
+        try {
+            parsedTarget = new URL(targetUrl);
+        } catch (e) {
+            clientRes.writeHead(400);
+            return clientRes.end("Invalid target URL");
+        }
+
+        let totalSize = entry.filesize || 0;
+        if (!totalSize && parsedTarget.searchParams.has('clen')) {
+            totalSize = parseInt(parsedTarget.searchParams.get('clen'), 10) || 0;
+        }
+
+        const reqHeaders = {
+            "User-Agent": (entry.headers && entry.headers["User-Agent"]) ||
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "*/*",
+            "Connection": "keep-alive"
+        };
+
+        const incomingRange = clientReq.headers["range"];
+        if (incomingRange && totalSize > 0) {
+            const match = incomingRange.match(/bytes=(\d+)-(\d*)/);
+            if (match) {
+                const start = parseInt(match[1], 10);
+                let end = match[2] ? parseInt(match[2], 10) : Math.min(totalSize - 1, start + MAX_RAM_CHUNK - 1);
+                if (end - start >= MAX_RAM_CHUNK) {
+                    end = Math.min(totalSize - 1, start + MAX_RAM_CHUNK - 1);
+                }
+                reqHeaders["Range"] = `bytes=${start}-${end}`;
+            } else {
+                reqHeaders["Range"] = incomingRange;
+            }
+        } else if (incomingRange) {
+            reqHeaders["Range"] = incomingRange;
+        }
+
+        const requestLib = parsedTarget.protocol === "http:" ? http : https;
+        const options = {
+            hostname: parsedTarget.hostname,
+            port: parsedTarget.port || (parsedTarget.protocol === "http:" ? 80 : 443),
+            path: parsedTarget.pathname + parsedTarget.search,
+            method: "GET",
+            headers: reqHeaders
+        };
+
+        const upstreamReq = requestLib.request(options, (upstreamRes) => {
+            if (upstreamRes.statusCode >= 300 && upstreamRes.statusCode < 400 && upstreamRes.headers.location) {
+                upstreamRes.resume();
+                entry.currentUrl = upstreamRes.headers.location;
+                return forwardRangeRequest(entry, clientReq, clientRes, redirectCount + 1);
+            }
+
+            const resHeaders = {
+                "Content-Type": entry.mimeType || upstreamRes.headers["content-type"] || "video/webm",
+                "Accept-Ranges": "bytes",
+                "Access-Control-Allow-Origin": "*",
+                "Cache-Control": "no-store"
+            };
+            if (upstreamRes.headers["content-range"]) {
+                resHeaders["Content-Range"] = upstreamRes.headers["content-range"];
+            }
+            if (upstreamRes.headers["content-length"]) {
+                resHeaders["Content-Length"] = upstreamRes.headers["content-length"];
+            }
+
+            clientRes.writeHead(upstreamRes.statusCode || 200, resHeaders);
+            upstreamRes.pipe(clientRes);
+
+            clientReq.on("close", () => {
+                try { upstreamReq.destroy(); } catch (e) {}
+            });
+        });
+
+        upstreamReq.on("error", (err) => {
+            if (!clientRes.headersSent) {
+                clientRes.writeHead(502);
+            }
+            clientRes.end();
+        });
+
+        upstreamReq.end();
+    }
+
     function startLocalPlayerServer() {
         if (playerServer || !http) return;
         try {
@@ -114,8 +209,8 @@
                     });
                     return res.end(JSON.stringify({
                         status: 'ok',
-                        service: 'DisplayX Player Service',
-                        version: '1.1.4',
+                        service: 'DisplayX Player Service (RefTube Pro Engine Active)',
+                        version: '2.5.0',
                         port: PLAYER_PORT
                     }));
                 }
@@ -168,16 +263,26 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                 }
 
                 if (parsed.pathname === '/stream') {
+                    // RefTube Pro In-Memory Stream Key (Direct WebM VP9 Video / Opus Audio in RAM)
+                    const key = parsed.searchParams.get('key');
+                    if (key && streamRegistry[key]) {
+                        return forwardRangeRequest(streamRegistry[key], req, res, 0);
+                    }
+
+                    // Fallback to direct video id
                     const vidId = parsed.searchParams.get('v') || '';
                     const quality = parsed.searchParams.get('q') || 'auto';
                     if (!/^[a-zA-Z0-9_-]{11}$/.test(vidId)) {
                         res.writeHead(400, { 'Content-Type': 'text/plain' });
-                        return res.end('Invalid YouTube video id');
+                        return res.end('Invalid YouTube video id or stream key');
                     }
                     try {
                         const directUrl = await resolveStreamUrl(vidId, quality);
                         const target = new URL(directUrl);
-                        const reqHeaders = { 'User-Agent': 'curl/8.7.1', 'Accept': '*/*' };
+                        const reqHeaders = {
+                            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                            'Accept': '*/*'
+                        };
                         if (req.headers.range) reqHeaders['Range'] = req.headers.range;
                         const upstream = https.request({
                             hostname: target.hostname,
@@ -249,6 +354,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     const playerStage = document.getElementById('playerStage');
     const playerFrame = document.getElementById('playerFrame');
     const nativePlayer = document.getElementById('nativePlayer');
+    const nativeAudio = document.getElementById('nativeAudio');
     const playerLoading = document.getElementById('playerLoading');
     const playerLoadingText = document.getElementById('playerLoadingText');
     const playerPlaceholder = document.getElementById('playerPlaceholder');
@@ -258,6 +364,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     const nowPlayingChannel = document.getElementById('nowPlayingChannel');
     const nowPlayingDuration = document.getElementById('nowPlayingDuration');
     const btnTogglePlayerMode = document.getElementById('btnTogglePlayerMode');
+    const btnToggleEngine = document.getElementById('btnToggleEngine');
     const btnBookmark = document.getElementById('btnBookmark');
     const bookmarkIcon = document.getElementById('bookmarkIcon');
     const btnCopyLink = document.getElementById('btnCopyLink');
@@ -295,16 +402,20 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
     const toastMessage = document.getElementById('toastMessage');
 
-    // State
+    // State (RefTube Pro In-Memory Stream Architecture)
     let currentVideo = null; // { id, title, channel, duration }
-    let playerMode = 'native'; // Native progressive MP4 stream with Range support
-    let currentQuality = 'auto'; // 'auto', '720', '480', '360'
+    let playerMode = 'pro'; // 'pro' (RefTube Pro WebM VP9 + Opus RAM) or 'embed' (YouTube IFrame)
+    let currentQuality = 'auto'; // 'auto', '2160', '1440', '1080', '720', '480', '360'
     let currentSpeed = 1.0;
+    let currentVideoFps = 30;
+    let hasSeparateAudio = false;
     let isLooping = false;
     let isSearching = false;
     let lastDetectedClipboard = "";
     let searchDebounceTimer = null;
     let osdTimer = null;
+    let activeYtDlpProc = null;
+    const videoMetadataCache = new Map();
 
     // Local Storage Keys
     const STORAGE_KEY_FAVORITES = 'displayx_favorites';
@@ -483,6 +594,65 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         }
     }
 
+    // ==========================================
+    // REFTUBE PRO DUAL-STREAM ENGINE (VP9 + OPUS)
+    // ==========================================
+    function syncAudioWithVideo(forceSeek = false) {
+        if (!nativePlayer || !nativeAudio || !hasSeparateAudio) {
+            if (nativePlayer) nativePlayer.muted = false;
+            return;
+        }
+
+        nativePlayer.muted = true; // Video element is pure WebM VP9 video
+        nativeAudio.muted = nativePlayer.muted;
+        nativeAudio.volume = nativePlayer.volume;
+        nativeAudio.playbackRate = nativePlayer.playbackRate || 1;
+
+        const vTime = nativePlayer.currentTime || 0;
+        const aTime = nativeAudio.currentTime || 0;
+        if (forceSeek || Math.abs(vTime - aTime) > 0.08) {
+            try {
+                nativeAudio.currentTime = vTime;
+            } catch (e) {}
+        }
+
+        if (!nativePlayer.paused && nativeAudio.paused && nativePlayer.readyState >= 2) {
+            nativeAudio.play().catch(() => {});
+        } else if (nativePlayer.paused && !nativeAudio.paused) {
+            nativeAudio.pause();
+        }
+    }
+
+    if (nativePlayer) {
+        nativePlayer.addEventListener('play', () => syncAudioWithVideo(true));
+        nativePlayer.addEventListener('pause', () => { if (nativeAudio && hasSeparateAudio) nativeAudio.pause(); });
+        nativePlayer.addEventListener('seeking', () => {
+            if (nativeAudio && hasSeparateAudio) {
+                try { nativeAudio.currentTime = nativePlayer.currentTime; } catch (e) {}
+            }
+        });
+        nativePlayer.addEventListener('seeked', () => syncAudioWithVideo(true));
+        nativePlayer.addEventListener('waiting', () => { if (nativeAudio && hasSeparateAudio) nativeAudio.pause(); });
+        nativePlayer.addEventListener('playing', () => syncAudioWithVideo(true));
+        nativePlayer.addEventListener('ratechange', () => {
+            if (nativeAudio && hasSeparateAudio) nativeAudio.playbackRate = nativePlayer.playbackRate;
+        });
+        nativePlayer.addEventListener('volumechange', () => {
+            if (nativeAudio && hasSeparateAudio) {
+                nativeAudio.volume = nativePlayer.volume;
+                nativeAudio.muted = nativePlayer.muted;
+            }
+        });
+        nativePlayer.addEventListener('timeupdate', () => {
+            syncAudioWithVideo(false);
+            if (nowPlayingDuration && nativePlayer.duration) {
+                const cur = nativePlayer.currentTime || 0;
+                const dur = nativePlayer.duration || 0;
+                nowPlayingDuration.textContent = `${formatTimecode(cur)} / ${formatTimecode(dur)}`;
+            }
+        });
+    }
+
     function playVideo(id, title = "YouTube Video", channel = "", duration = "", requestedMode = null) {
         if (!id) return;
 
@@ -502,46 +672,266 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         saveToHistory(currentVideo);
         highlightActiveCard(id);
 
-        // Use YouTube's official embedded player. Direct MP4 extraction is not used.
-        playerMode = 'embed';
-        loadEmbedStream(id);
+        if (requestedMode) {
+            playerMode = requestedMode;
+        }
+
+        updateEngineButtonUI();
+
+        if (playerMode === 'embed') {
+            loadEmbedStream(id);
+        } else {
+            loadInProStreamEngine(id, currentQuality);
+        }
     }
 
-    function loadEmbedStream(id, quality = currentQuality, seekTime = null) {
-        if (!id || !nativePlayer) return;
+    function loadInProStreamEngine(videoId, targetQuality = currentQuality, seekTime = null) {
+        if (!videoId || !nativePlayer) return;
 
-        playerMode = 'native';
-        currentQuality = quality;
+        playerMode = 'pro';
+        currentQuality = targetQuality;
+        updateEngineButtonUI();
 
         if (playerFrame) {
             playerFrame.style.display = 'none';
             playerFrame.src = 'about:blank';
         }
-
         nativePlayer.style.display = 'block';
-        showPlayerLoading('Menyiapkan stream video...');
+
+        if (activeYtDlpProc) {
+            try { activeYtDlpProc.kill(); } catch (e) {}
+            activeYtDlpProc = null;
+        }
+
+        // 1. Instant cache check
+        if (videoMetadataCache.has(videoId)) {
+            const cached = videoMetadataCache.get(videoId);
+            if (Date.now() - cached.timestamp < 30 * 60 * 1000) {
+                selectAndPlayStreamResolution(videoId, cached, targetQuality, seekTime);
+                return;
+            }
+        }
+
+        showPlayerLoading('Menghubungkan stream video Pro (1080p–4K)...');
+
+        const ytDlp = resolveYtDlp();
+        const args = ['--no-playlist', '--no-warnings', '-J', `https://www.youtube.com/watch?v=${videoId}`];
+        const env = getProcessEnv();
+
+        const proc = cp.spawn(ytDlp, args, { env });
+        activeYtDlpProc = proc;
+        const stdoutChunks = [];
+
+        proc.stdout.on('data', chunk => stdoutChunks.push(chunk));
+
+        proc.on('close', code => {
+            activeYtDlpProc = null;
+            if (code !== 0 || stdoutChunks.length === 0) {
+                console.warn('yt-dlp JSON scan failed, falling back to embed player');
+                loadEmbedStream(videoId);
+                return;
+            }
+
+            try {
+                const rawJson = Buffer.concat(stdoutChunks).toString('utf8');
+                const info = JSON.parse(rawJson);
+                const formats = info.formats || [];
+
+                // Filter WebM VP9/VP8 video streams (native hardware acceleration in Adobe CEF)
+                const webmVideos = formats.filter(f => {
+                    const isWebm = f.ext === 'webm' || (f.vcodec && /^(vp0?9|vp8)/i.test(f.vcodec));
+                    const hasVideo = f.vcodec && f.vcodec !== 'none' && f.height;
+                    const isDirectHttp = f.protocol === 'https' || f.protocol === 'http';
+                    return isWebm && hasVideo && isDirectHttp && f.url;
+                });
+
+                webmVideos.sort((a, b) => {
+                    if ((b.height || 0) !== (a.height || 0)) return (b.height || 0) - (a.height || 0);
+                    if ((b.fps || 0) !== (a.fps || 0)) return (b.fps || 0) - (a.fps || 0);
+                    return (b.tbr || 0) - (a.tbr || 0);
+                });
+
+                // Filter WebM Opus/Vorbis audio streams (itag 251/250/249)
+                const opusAudios = formats.filter(f => {
+                    const isOpus = f.ext === 'webm' || (f.acodec && /^(opus|vorbis)/i.test(f.acodec));
+                    const isAudioOnly = (!f.vcodec || f.vcodec === 'none') && f.acodec && f.acodec !== 'none';
+                    const isDirectHttp = f.protocol === 'https' || f.protocol === 'http';
+                    return isOpus && isAudioOnly && isDirectHttp && f.url;
+                });
+
+                opusAudios.sort((a, b) => (b.abr || b.tbr || 0) - (a.abr || a.tbr || 0));
+
+                if (webmVideos.length === 0) {
+                    console.log('No WebM formats found, fallback to embed');
+                    loadEmbedStream(videoId);
+                    return;
+                }
+
+                const metadata = {
+                    title: info.title || (currentVideo ? currentVideo.title : 'YouTube Video'),
+                    webmVideos,
+                    opusAudios,
+                    fps: webmVideos[0].fps || 30,
+                    duration: info.duration || 0,
+                    timestamp: Date.now()
+                };
+
+                videoMetadataCache.set(videoId, metadata);
+                selectAndPlayStreamResolution(videoId, metadata, targetQuality, seekTime);
+
+            } catch (err) {
+                console.error('Error parsing yt-dlp metadata:', err);
+                loadEmbedStream(videoId);
+            }
+        });
+    }
+
+    function selectAndPlayStreamResolution(videoId, metadata, targetQuality = 'auto', preserveTimeSec = null) {
+        if (!metadata || !metadata.webmVideos || metadata.webmVideos.length === 0) {
+            loadEmbedStream(videoId);
+            return;
+        }
+
+        const maxH = targetQuality === 'auto' ? Infinity : parseInt(targetQuality, 10);
+        let candidates = metadata.webmVideos.filter(f => (f.height || 0) <= maxH);
+        if (candidates.length === 0) candidates = metadata.webmVideos;
+
+        const chosenVideo = candidates[0];
+        const bestAudio = metadata.opusAudios && metadata.opusAudios.length > 0 ? metadata.opusAudios[0] : null;
+
+        currentVideoFps = chosenVideo.fps || metadata.fps || 30;
+
+        const vKey = `video_${videoId}_${chosenVideo.format_id || chosenVideo.height}`;
+        streamRegistry[vKey] = {
+            url: chosenVideo.url,
+            headers: chosenVideo.http_headers || {},
+            filesize: chosenVideo.filesize || chosenVideo.filesize_approx || 0,
+            mimeType: 'video/webm'
+        };
+
+        const vStreamUrl = `http://127.0.0.1:${PLAYER_PORT}/stream?key=${encodeURIComponent(vKey)}`;
+
+        if (bestAudio && bestAudio.url) {
+            const aKey = `audio_${videoId}_${bestAudio.format_id || 'opus'}`;
+            streamRegistry[aKey] = {
+                url: bestAudio.url,
+                headers: bestAudio.http_headers || {},
+                filesize: bestAudio.filesize || bestAudio.filesize_approx || 0,
+                mimeType: 'audio/webm'
+            };
+            const aStreamUrl = `http://127.0.0.1:${PLAYER_PORT}/stream?key=${encodeURIComponent(aKey)}`;
+            if (nativeAudio && nativeAudio.src !== aStreamUrl) {
+                nativeAudio.src = aStreamUrl;
+                nativeAudio.load();
+            }
+            hasSeparateAudio = true;
+        } else {
+            hasSeparateAudio = false;
+        }
+
+        // Clean previous handlers to prevent abort loops
+        nativePlayer.onerror = null;
+        nativePlayer.onplaying = null;
+        nativePlayer.oncanplay = null;
+        nativePlayer.onloadedmetadata = null;
+
+        try { nativePlayer.pause(); } catch (e) {}
+
+        let pendingSeek = (preserveTimeSec !== null && preserveTimeSec > 0) ? preserveTimeSec : null;
+
+        nativePlayer.onloadedmetadata = () => {
+            hidePlayerLoading();
+            if (pendingSeek !== null) {
+                try {
+                    nativePlayer.currentTime = pendingSeek;
+                    if (nativeAudio && hasSeparateAudio) nativeAudio.currentTime = pendingSeek;
+                } catch (e) {}
+                pendingSeek = null;
+            }
+            try { nativePlayer.playbackRate = currentSpeed; } catch (e) {}
+            syncAudioWithVideo(true);
+            const p = nativePlayer.play();
+            if (p) p.catch(() => {});
+        };
 
         nativePlayer.onplaying = () => {
             hidePlayerLoading();
-            if (seekTime !== null && seekTime > 0) {
-                try { nativePlayer.currentTime = seekTime; } catch (e) {}
-            }
-            try { nativePlayer.playbackRate = currentSpeed; } catch (e) {}
-        };
-        nativePlayer.oncanplay = () => hidePlayerLoading();
-        nativePlayer.onerror = (e) => {
-            hidePlayerLoading();
-            showToast('Gagal memuat kualitas ini. Mencoba kualitas standar...');
-            if (quality !== 'auto') {
-                loadEmbedStream(id, 'auto', seekTime);
-            }
+            syncAudioWithVideo(true);
         };
 
-        const streamUrl = `http://127.0.0.1:${PLAYER_PORT}/stream?v=${encodeURIComponent(id)}&q=${encodeURIComponent(quality)}`;
-        nativePlayer.src = streamUrl;
+        nativePlayer.oncanplay = () => hidePlayerLoading();
+
+        nativePlayer.onerror = (e) => {
+            hidePlayerLoading();
+            const err = nativePlayer.error;
+            if (err && err.code === 1) return; // Routine abort ignored
+            console.warn('Native player error, falling back to embed player:', err);
+            loadEmbedStream(videoId);
+        };
+
+        nativePlayer.src = vStreamUrl;
         nativePlayer.load();
         const p = nativePlayer.play();
         if (p) p.catch(() => {});
+
+        // Update UI Label
+        const actualResLabel = `${chosenVideo.height}p`;
+        if (currentQualityLabel) {
+            currentQualityLabel.textContent = targetQuality === 'auto' ? `Auto (${actualResLabel})` : actualResLabel;
+        }
+        document.querySelectorAll('#qualityMenu .dx-dropdown-item').forEach(item => {
+            item.classList.toggle('active', item.getAttribute('data-quality') === targetQuality);
+        });
+
+        showOsd(`📺 ${actualResLabel} WebM • ${Math.round(currentVideoFps)}fps`);
+    }
+
+    function loadEmbedStream(id) {
+        if (!id) return;
+        playerMode = 'embed';
+        updateEngineButtonUI();
+
+        if (nativePlayer) {
+            nativePlayer.style.display = 'none';
+            try { nativePlayer.pause(); } catch (e) {}
+        }
+        if (nativeAudio) {
+            try { nativeAudio.pause(); } catch (e) {}
+        }
+
+        if (playerFrame) {
+            playerFrame.style.display = 'block';
+            playerFrame.src = `http://127.0.0.1:${PLAYER_PORT}/player?v=${encodeURIComponent(id)}`;
+        }
+        hidePlayerLoading();
+        showOsd('🌐 Mode Embed 4K Aktif');
+    }
+
+    function togglePlayerMode() {
+        if (!currentVideo || !currentVideo.id) {
+            showToast('Pilih video terlebih dahulu.');
+            return;
+        }
+        const prevTime = nativePlayer ? nativePlayer.currentTime : 0;
+        if (playerMode === 'pro') {
+            loadEmbedStream(currentVideo.id);
+            showToast('Beralih ke Mode Embed 4K');
+        } else {
+            loadInProStreamEngine(currentVideo.id, currentQuality, prevTime);
+            showToast('Beralih ke Direct Stream Pro (WebM RAM)');
+        }
+    }
+
+    function updateEngineButtonUI() {
+        if (btnToggleEngine) {
+            if (playerMode === 'pro') {
+                btnToggleEngine.textContent = '⚡ Pro Stream';
+                btnToggleEngine.classList.add('active');
+            } else {
+                btnToggleEngine.textContent = '🌐 Mode Embed';
+                btnToggleEngine.classList.remove('active');
+            }
+        }
     }
 
     function changeQuality(newQuality, label) {
@@ -555,13 +945,25 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         });
 
         showOsd(`⚙️ Kualitas: ${label}`);
-        loadEmbedStream(currentVideo.id, newQuality, prevTime);
+
+        if (playerMode === 'pro') {
+            if (videoMetadataCache.has(currentVideo.id)) {
+                selectAndPlayStreamResolution(currentVideo.id, videoMetadataCache.get(currentVideo.id), newQuality, prevTime);
+            } else {
+                loadInProStreamEngine(currentVideo.id, newQuality, prevTime);
+            }
+        } else {
+            loadEmbedStream(currentVideo.id);
+        }
     }
 
     function changeSpeed(newSpeed, label) {
         currentSpeed = parseFloat(newSpeed);
         if (nativePlayer) {
             nativePlayer.playbackRate = currentSpeed;
+        }
+        if (nativeAudio && hasSeparateAudio) {
+            nativeAudio.playbackRate = currentSpeed;
         }
         if (currentSpeedLabel) currentSpeedLabel.textContent = label;
 
@@ -572,34 +974,44 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         showOsd(`⚡ Kecepatan: ${label}`);
     }
 
-    // Frame-by-Frame Navigation (Premiere Pro & YouTube Standard: , and .)
-    function stepFrame(forward = true) {
-        if (!nativePlayer || !currentVideo) return;
-        if (!nativePlayer.paused) {
-            nativePlayer.pause();
-        }
-        const frameDuration = 1 / 30; // 30 fps reference
-        if (forward) {
-            nativePlayer.currentTime = Math.min((nativePlayer.duration || Infinity), nativePlayer.currentTime + frameDuration);
+    // Frame-by-Frame Navigation (Premiere Pro Standard: , and .)
+    function stepFrame(forward = true, count = 1) {
+        if (!currentVideo) return;
+        const fps = currentVideoFps || 30;
+        const frameDuration = 1 / fps;
+
+        if (playerMode === 'pro' && nativePlayer) {
+            if (!nativePlayer.paused) {
+                nativePlayer.pause();
+                if (nativeAudio && hasSeparateAudio) nativeAudio.pause();
+            }
+            const currentFrame = Math.round((nativePlayer.currentTime || 0) * fps);
+            const targetFrame = forward ? currentFrame + count : currentFrame - count;
+            const targetSec = Math.max(0, targetFrame * frameDuration);
+            nativePlayer.currentTime = targetSec;
+            if (nativeAudio && hasSeparateAudio) {
+                try { nativeAudio.currentTime = targetSec; } catch (e) {}
+            }
+            showFrameOsd(forward, targetSec, count);
         } else {
-            nativePlayer.currentTime = Math.max(0, nativePlayer.currentTime - frameDuration);
+            showToast('Navigasi frame optimal di Mode ⚡ Pro Stream');
         }
-        showFrameOsd(forward);
     }
 
-    function showFrameOsd(forward) {
-        const sec = nativePlayer ? nativePlayer.currentTime : 0;
+    function showFrameOsd(forward, sec, count = 1) {
         const timecode = formatTimecode(sec);
-        const directionText = forward ? '+1 Frame ⏭️' : '⏮️ -1 Frame';
+        const countText = count > 1 ? `${count} Frames` : '1 Frame';
+        const directionText = forward ? `+${countText} ⏭️` : `⏮️ -${countText}`;
         showOsd(`${directionText} • ${timecode}`);
     }
 
     function formatTimecode(totalSeconds) {
         if (isNaN(totalSeconds) || totalSeconds < 0) totalSeconds = 0;
+        const fps = currentVideoFps || 30;
         const hours = Math.floor(totalSeconds / 3600);
         const minutes = Math.floor((totalSeconds % 3600) / 60);
         const seconds = Math.floor(totalSeconds % 60);
-        const frames = Math.floor((totalSeconds % 1) * 30);
+        const frames = Math.floor((totalSeconds % 1) * fps);
         const pad = (n) => String(n).padStart(2, '0');
         return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}:${pad(frames)}`;
     }
@@ -1247,12 +1659,19 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         clipboardBanner.style.display = 'none';
     });
 
+    // Toggle Engine Button (Pro Stream vs Embed)
+    if (btnToggleEngine) {
+        btnToggleEngine.addEventListener('click', () => {
+            togglePlayerMode();
+        });
+    }
+
     // Frame-by-Frame Step Buttons
     if (btnStepBack) {
-        btnStepBack.addEventListener('click', () => stepFrame(false));
+        btnStepBack.addEventListener('click', () => stepFrame(false, 1));
     }
     if (btnStepForward) {
-        btnStepForward.addEventListener('click', () => stepFrame(true));
+        btnStepForward.addEventListener('click', () => stepFrame(true, 1));
     }
 
     // Quality Dropdown Menu Toggle
@@ -1315,18 +1734,20 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
         if (e.key === ',' || e.code === 'Comma') {
             e.preventDefault();
-            stepFrame(false);
+            stepFrame(false, e.shiftKey ? 10 : 1);
         } else if (e.key === '.' || e.code === 'Period') {
             e.preventDefault();
-            stepFrame(true);
+            stepFrame(true, e.shiftKey ? 10 : 1);
         } else if (e.key === ' ' || e.code === 'Space' || e.key === 'k' || e.key === 'K') {
             e.preventDefault();
-            if (nativePlayer) {
+            if (playerMode === 'pro' && nativePlayer) {
                 if (nativePlayer.paused) {
-                    nativePlayer.play();
+                    const p = nativePlayer.play();
+                    if (p && typeof p.catch === 'function') p.catch(() => {});
                     showOsd('▶ Play');
                 } else {
                     nativePlayer.pause();
+                    if (nativeAudio && hasSeparateAudio) nativeAudio.pause();
                     showOsd('⏸️ Pause');
                 }
             }
@@ -1334,32 +1755,27 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
             e.preventDefault();
             if (nativePlayer) {
                 nativePlayer.currentTime = Math.max(0, nativePlayer.currentTime - 5);
+                if (nativeAudio && hasSeparateAudio) nativeAudio.currentTime = nativePlayer.currentTime;
                 showOsd('⏪ -5s');
             }
         } else if (e.key === 'l' || e.key === 'L') {
             e.preventDefault();
             if (nativePlayer) {
                 nativePlayer.currentTime = Math.min((nativePlayer.duration || Infinity), nativePlayer.currentTime + 5);
+                if (nativeAudio && hasSeparateAudio) nativeAudio.currentTime = nativePlayer.currentTime;
                 showOsd('⏩ +5s');
             }
         } else if (e.key === 'ArrowLeft') {
             e.preventDefault();
-            if (nativePlayer) {
-                const diff = e.shiftKey ? 1 : 5;
-                nativePlayer.currentTime = Math.max(0, nativePlayer.currentTime - diff);
-                showOsd(`⏪ -${diff}s`);
-            }
+            stepFrame(false, e.shiftKey ? 10 : 1);
         } else if (e.key === 'ArrowRight') {
             e.preventDefault();
-            if (nativePlayer) {
-                const diff = e.shiftKey ? 1 : 5;
-                nativePlayer.currentTime = Math.min((nativePlayer.duration || Infinity), nativePlayer.currentTime + diff);
-                showOsd(`⏩ +${diff}s`);
-            }
+            stepFrame(true, e.shiftKey ? 10 : 1);
         } else if (e.key === 'm' || e.key === 'M') {
             e.preventDefault();
             if (nativePlayer) {
                 nativePlayer.muted = !nativePlayer.muted;
+                if (nativeAudio && hasSeparateAudio) nativeAudio.muted = nativePlayer.muted;
                 showOsd(nativePlayer.muted ? '🔇 Mute' : '🔊 Unmute');
             }
         } else if (e.key === 'f' || e.key === 'F') {
