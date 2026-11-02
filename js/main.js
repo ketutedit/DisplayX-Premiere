@@ -352,7 +352,6 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
     // DOM Elements
     const playerStage = document.getElementById('playerStage');
-    const playerFrame = document.getElementById('playerFrame');
     const nativePlayer = document.getElementById('nativePlayer');
     const nativeAudio = document.getElementById('nativeAudio');
     const playerLoading = document.getElementById('playerLoading');
@@ -363,8 +362,8 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     const nowPlayingTitle = document.getElementById('nowPlayingTitle');
     const nowPlayingChannel = document.getElementById('nowPlayingChannel');
     const nowPlayingDuration = document.getElementById('nowPlayingDuration');
-    const btnTogglePlayerMode = document.getElementById('btnTogglePlayerMode');
-    const btnToggleEngine = document.getElementById('btnToggleEngine');
+    const btnAudioToggle = document.getElementById('btnAudioToggle');
+    const volumeSlider = document.getElementById('volumeSlider');
     const btnBookmark = document.getElementById('btnBookmark');
     const bookmarkIcon = document.getElementById('bookmarkIcon');
     const btnCopyLink = document.getElementById('btnCopyLink');
@@ -382,6 +381,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
     const searchInput = document.getElementById('searchInput');
     const btnSearch = document.getElementById('btnSearch');
+    const btnPasteStream = document.getElementById('btnPasteStream');
     const btnClearSearch = document.getElementById('btnClearSearch');
     const suggestionsList = document.getElementById('suggestionsList');
 
@@ -402,13 +402,15 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
     const toastMessage = document.getElementById('toastMessage');
 
-    // State (RefTube Pro In-Memory Stream Architecture)
+    // State (Zero-Disk Pro Stream Architecture: WebM VP9 Video + Opus Audio in RAM)
     let currentVideo = null; // { id, title, channel, duration }
-    let playerMode = 'pro'; // 'pro' (RefTube Pro WebM VP9 + Opus RAM) or 'embed' (YouTube IFrame)
+    let playerMode = 'pro'; // Pure Pro Stream
     let currentQuality = 'auto'; // 'auto', '2160', '1440', '1080', '720', '480', '360'
     let currentSpeed = 1.0;
     let currentVideoFps = 30;
     let hasSeparateAudio = false;
+    let isAudioMuted = false;
+    let audioVolume = 0.85;
     let isLooping = false;
     let isSearching = false;
     let lastDetectedClipboard = "";
@@ -548,21 +550,13 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
             return clean;
         }
 
-        // Standard watch
-        const watchMatch = clean.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
-        if (watchMatch) return watchMatch[1];
+        // Comprehensive match for all YouTube URL variants (watch, youtu.be, shorts, live, embed, v)
+        const match = clean.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|shorts\/|live\/|watch\?v=|watch\?.+&v=))([\w-]{11})/i);
+        if (match) return match[1];
 
-        // youtu.be
-        const beMatch = clean.match(/youtu\.be\/([a-zA-Z0-9_-]{11})/);
-        if (beMatch) return beMatch[1];
-
-        // shorts
-        const shortsMatch = clean.match(/\/shorts\/([a-zA-Z0-9_-]{11})/);
-        if (shortsMatch) return shortsMatch[1];
-
-        // embed
-        const embedMatch = clean.match(/\/embed\/([a-zA-Z0-9_-]{11})/);
-        if (embedMatch) return embedMatch[1];
+        // Query param fallback
+        const queryMatch = clean.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
+        if (queryMatch) return queryMatch[1];
 
         return null;
     }
@@ -597,16 +591,46 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     // ==========================================
     // REFTUBE PRO DUAL-STREAM ENGINE (VP9 + OPUS)
     // ==========================================
+    function applyAudioSettings() {
+        if (!nativeAudio) return;
+        nativeAudio.muted = isAudioMuted;
+        nativeAudio.volume = isAudioMuted ? 0 : audioVolume;
+
+        if (nativePlayer) {
+            nativePlayer.muted = true; // Video element is pure WebM VP9 video
+        }
+
+        if (btnAudioToggle) {
+            if (isAudioMuted || audioVolume === 0) {
+                btnAudioToggle.textContent = '🔇 Mute';
+                btnAudioToggle.classList.remove('audio-active');
+                btnAudioToggle.classList.add('audio-muted');
+            } else {
+                btnAudioToggle.textContent = '🔊 Audio';
+                btnAudioToggle.classList.add('audio-active');
+                btnAudioToggle.classList.remove('audio-muted');
+            }
+        }
+
+        if (volumeSlider) {
+            volumeSlider.value = isAudioMuted ? 0 : Math.round(audioVolume * 100);
+        }
+    }
+
     function syncAudioWithVideo(forceSeek = false) {
         if (!nativePlayer || !nativeAudio || !hasSeparateAudio) {
-            if (nativePlayer) nativePlayer.muted = false;
             return;
         }
 
-        nativePlayer.muted = true; // Video element is pure WebM VP9 video
-        nativeAudio.muted = nativePlayer.muted;
-        nativeAudio.volume = nativePlayer.volume;
+        nativePlayer.muted = true;
+        nativeAudio.muted = isAudioMuted;
+        nativeAudio.volume = isAudioMuted ? 0 : audioVolume;
         nativeAudio.playbackRate = nativePlayer.playbackRate || 1;
+
+        if (isAudioMuted) {
+            if (!nativeAudio.paused) nativeAudio.pause();
+            return;
+        }
 
         const vTime = nativePlayer.currentTime || 0;
         const aTime = nativeAudio.currentTime || 0;
@@ -623,6 +647,29 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         }
     }
 
+    function toggleAudioMute() {
+        isAudioMuted = !isAudioMuted;
+        applyAudioSettings();
+        if (!isAudioMuted && hasSeparateAudio && nativePlayer && !nativePlayer.paused) {
+            nativeAudio.play().catch(() => {});
+        }
+        showOsd(isAudioMuted ? '🔇 Audio Dimatikan' : `🔊 Audio Aktif (${Math.round(audioVolume * 100)}%)`);
+    }
+
+    function changeVolumeRelative(delta) {
+        audioVolume = Math.min(1.0, Math.max(0.0, audioVolume + delta));
+        if (audioVolume > 0 && isAudioMuted) {
+            isAudioMuted = false;
+        } else if (audioVolume === 0) {
+            isAudioMuted = true;
+        }
+        applyAudioSettings();
+        if (!isAudioMuted && hasSeparateAudio && nativePlayer && !nativePlayer.paused && nativeAudio.paused) {
+            nativeAudio.play().catch(() => {});
+        }
+        showOsd(`🔊 Volume: ${Math.round(audioVolume * 100)}%`);
+    }
+
     if (nativePlayer) {
         nativePlayer.addEventListener('play', () => syncAudioWithVideo(true));
         nativePlayer.addEventListener('pause', () => { if (nativeAudio && hasSeparateAudio) nativeAudio.pause(); });
@@ -637,12 +684,6 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         nativePlayer.addEventListener('ratechange', () => {
             if (nativeAudio && hasSeparateAudio) nativeAudio.playbackRate = nativePlayer.playbackRate;
         });
-        nativePlayer.addEventListener('volumechange', () => {
-            if (nativeAudio && hasSeparateAudio) {
-                nativeAudio.volume = nativePlayer.volume;
-                nativeAudio.muted = nativePlayer.muted;
-            }
-        });
         nativePlayer.addEventListener('timeupdate', () => {
             syncAudioWithVideo(false);
             if (nowPlayingDuration && nativePlayer.duration) {
@@ -653,7 +694,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         });
     }
 
-    function playVideo(id, title = "YouTube Video", channel = "", duration = "", requestedMode = null) {
+    function playVideo(id, title = "YouTube Video", channel = "", duration = "") {
         if (!id) return;
 
         currentVideo = { id, title, channel, duration };
@@ -672,17 +713,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         saveToHistory(currentVideo);
         highlightActiveCard(id);
 
-        if (requestedMode) {
-            playerMode = requestedMode;
-        }
-
-        updateEngineButtonUI();
-
-        if (playerMode === 'embed') {
-            loadEmbedStream(id);
-        } else {
-            loadInProStreamEngine(id, currentQuality);
-        }
+        loadInProStreamEngine(id, currentQuality);
     }
 
     function loadInProStreamEngine(videoId, targetQuality = currentQuality, seekTime = null) {
@@ -690,12 +721,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
         playerMode = 'pro';
         currentQuality = targetQuality;
-        updateEngineButtonUI();
 
-        if (playerFrame) {
-            playerFrame.style.display = 'none';
-            playerFrame.src = 'about:blank';
-        }
         nativePlayer.style.display = 'block';
 
         if (activeYtDlpProc) {
@@ -727,8 +753,8 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         proc.on('close', code => {
             activeYtDlpProc = null;
             if (code !== 0 || stdoutChunks.length === 0) {
-                console.warn('yt-dlp JSON scan failed, falling back to embed player');
-                loadEmbedStream(videoId);
+                console.warn('yt-dlp JSON scan failed');
+                showPlayerError('Gagal mengambil data video YouTube. Coba refresh atau pilih video lain.');
                 return;
             }
 
@@ -762,13 +788,28 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                 opusAudios.sort((a, b) => (b.abr || b.tbr || 0) - (a.abr || a.tbr || 0));
 
                 if (webmVideos.length === 0) {
-                    console.log('No WebM formats found, fallback to embed');
-                    loadEmbedStream(videoId);
+                    console.log('No WebM formats found');
+                    showPlayerError('Format stream video (WebM VP9) tidak ditemukan untuk video ini.');
                     return;
                 }
 
+                const realTitle = info.title || (currentVideo ? currentVideo.title : 'YouTube Video');
+                const realChannel = info.uploader || info.channel || (currentVideo ? currentVideo.channel : 'YouTube Creator');
+                if (currentVideo && currentVideo.id === videoId) {
+                    currentVideo.title = realTitle;
+                    currentVideo.channel = realChannel;
+                    if (nowPlayingTitle) {
+                        nowPlayingTitle.textContent = realTitle;
+                        nowPlayingTitle.title = realTitle;
+                    }
+                    if (nowPlayingChannel) {
+                        nowPlayingChannel.textContent = realChannel;
+                    }
+                }
+
                 const metadata = {
-                    title: info.title || (currentVideo ? currentVideo.title : 'YouTube Video'),
+                    title: realTitle,
+                    channel: realChannel,
                     webmVideos,
                     opusAudios,
                     fps: webmVideos[0].fps || 30,
@@ -781,14 +822,14 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
             } catch (err) {
                 console.error('Error parsing yt-dlp metadata:', err);
-                loadEmbedStream(videoId);
+                showPlayerError('Gagal memproses stream video: ' + (err.message || 'Format tidak valid'));
             }
         });
     }
 
     function selectAndPlayStreamResolution(videoId, metadata, targetQuality = 'auto', preserveTimeSec = null) {
         if (!metadata || !metadata.webmVideos || metadata.webmVideos.length === 0) {
-            loadEmbedStream(videoId);
+            showPlayerError('Stream video tidak tersedia untuk resolusi ini.');
             return;
         }
 
@@ -849,6 +890,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                 pendingSeek = null;
             }
             try { nativePlayer.playbackRate = currentSpeed; } catch (e) {}
+            applyAudioSettings();
             syncAudioWithVideo(true);
             const p = nativePlayer.play();
             if (p) p.catch(() => {});
@@ -865,8 +907,8 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
             hidePlayerLoading();
             const err = nativePlayer.error;
             if (err && err.code === 1) return; // Routine abort ignored
-            console.warn('Native player error, falling back to embed player:', err);
-            loadEmbedStream(videoId);
+            console.warn('Native player error:', err);
+            showPlayerError('Pemutar video mengalami kendala stream. Coba ganti resolusi atau pilih video lain.');
         };
 
         nativePlayer.src = vStreamUrl;
@@ -886,54 +928,6 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         showOsd(`📺 ${actualResLabel} WebM • ${Math.round(currentVideoFps)}fps`);
     }
 
-    function loadEmbedStream(id) {
-        if (!id) return;
-        playerMode = 'embed';
-        updateEngineButtonUI();
-
-        if (nativePlayer) {
-            nativePlayer.style.display = 'none';
-            try { nativePlayer.pause(); } catch (e) {}
-        }
-        if (nativeAudio) {
-            try { nativeAudio.pause(); } catch (e) {}
-        }
-
-        if (playerFrame) {
-            playerFrame.style.display = 'block';
-            playerFrame.src = `http://127.0.0.1:${PLAYER_PORT}/player?v=${encodeURIComponent(id)}`;
-        }
-        hidePlayerLoading();
-        showOsd('🌐 Mode Embed 4K Aktif');
-    }
-
-    function togglePlayerMode() {
-        if (!currentVideo || !currentVideo.id) {
-            showToast('Pilih video terlebih dahulu.');
-            return;
-        }
-        const prevTime = nativePlayer ? nativePlayer.currentTime : 0;
-        if (playerMode === 'pro') {
-            loadEmbedStream(currentVideo.id);
-            showToast('Beralih ke Mode Embed 4K');
-        } else {
-            loadInProStreamEngine(currentVideo.id, currentQuality, prevTime);
-            showToast('Beralih ke Direct Stream Pro (WebM RAM)');
-        }
-    }
-
-    function updateEngineButtonUI() {
-        if (btnToggleEngine) {
-            if (playerMode === 'pro') {
-                btnToggleEngine.textContent = '⚡ Pro Stream';
-                btnToggleEngine.classList.add('active');
-            } else {
-                btnToggleEngine.textContent = '🌐 Mode Embed';
-                btnToggleEngine.classList.remove('active');
-            }
-        }
-    }
-
     function changeQuality(newQuality, label) {
         if (!currentVideo || !currentVideo.id) return;
         const prevTime = nativePlayer ? nativePlayer.currentTime : 0;
@@ -946,14 +940,10 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
         showOsd(`⚙️ Kualitas: ${label}`);
 
-        if (playerMode === 'pro') {
-            if (videoMetadataCache.has(currentVideo.id)) {
-                selectAndPlayStreamResolution(currentVideo.id, videoMetadataCache.get(currentVideo.id), newQuality, prevTime);
-            } else {
-                loadInProStreamEngine(currentVideo.id, newQuality, prevTime);
-            }
+        if (videoMetadataCache.has(currentVideo.id)) {
+            selectAndPlayStreamResolution(currentVideo.id, videoMetadataCache.get(currentVideo.id), newQuality, prevTime);
         } else {
-            loadEmbedStream(currentVideo.id);
+            loadInProStreamEngine(currentVideo.id, newQuality, prevTime);
         }
     }
 
@@ -976,26 +966,22 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
     // Frame-by-Frame Navigation (Premiere Pro Standard: , and .)
     function stepFrame(forward = true, count = 1) {
-        if (!currentVideo) return;
+        if (!currentVideo || !nativePlayer) return;
         const fps = currentVideoFps || 30;
         const frameDuration = 1 / fps;
 
-        if (playerMode === 'pro' && nativePlayer) {
-            if (!nativePlayer.paused) {
-                nativePlayer.pause();
-                if (nativeAudio && hasSeparateAudio) nativeAudio.pause();
-            }
-            const currentFrame = Math.round((nativePlayer.currentTime || 0) * fps);
-            const targetFrame = forward ? currentFrame + count : currentFrame - count;
-            const targetSec = Math.max(0, targetFrame * frameDuration);
-            nativePlayer.currentTime = targetSec;
-            if (nativeAudio && hasSeparateAudio) {
-                try { nativeAudio.currentTime = targetSec; } catch (e) {}
-            }
-            showFrameOsd(forward, targetSec, count);
-        } else {
-            showToast('Navigasi frame optimal di Mode ⚡ Pro Stream');
+        if (!nativePlayer.paused) {
+            nativePlayer.pause();
+            if (nativeAudio && hasSeparateAudio) nativeAudio.pause();
         }
+        const currentFrame = Math.round((nativePlayer.currentTime || 0) * fps);
+        const targetFrame = forward ? currentFrame + count : Math.max(0, currentFrame - count);
+        const targetSec = Math.max(0, targetFrame * frameDuration);
+        nativePlayer.currentTime = targetSec;
+        if (nativeAudio && hasSeparateAudio) {
+            try { nativeAudio.currentTime = targetSec; } catch (e) {}
+        }
+        showFrameOsd(forward, targetSec, count);
     }
 
     function showFrameOsd(forward, sec, count = 1) {
@@ -1028,17 +1014,6 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
             playerOsd.style.transform = 'translateY(-4px)';
             setTimeout(() => { if (playerOsd) playerOsd.style.display = 'none'; }, 250);
         }, 1100);
-    }
-
-    function togglePlayerMode() {
-        // The player intentionally stays on YouTube's official embed mode.
-        // The button now acts as a convenient reload for the current video.
-        if (currentVideo && currentVideo.id) {
-            loadEmbedStream(currentVideo.id);
-            showToast('Memuat ulang pemutar YouTube...');
-        } else {
-            showToast('Pilih video terlebih dahulu.');
-        }
     }
 
     function highlightActiveCard(activeId) {
@@ -1593,19 +1568,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         if (nativePlayer) {
             nativePlayer.loop = isLooping;
         }
-
-        // If in embed mode, reload embed with loop param
-        if (playerMode === 'embed' && currentVideo && currentVideo.id) {
-            loadEmbedStream(currentVideo.id);
-        }
     });
-
-    // Toggle Player Mode (MP4 Direct vs Embed)
-    if (btnTogglePlayerMode) {
-        btnTogglePlayerMode.addEventListener('click', () => {
-            togglePlayerMode();
-        });
-    }
 
     // Theater Mode Toggle
     btnToggleTheater.addEventListener('click', () => {
@@ -1659,10 +1622,88 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         clipboardBanner.style.display = 'none';
     });
 
-    // Toggle Engine Button (Pro Stream vs Embed)
-    if (btnToggleEngine) {
-        btnToggleEngine.addEventListener('click', () => {
-            togglePlayerMode();
+    // Audio Toggle Button
+    if (btnAudioToggle) {
+        btnAudioToggle.addEventListener('click', () => {
+            toggleAudioMute();
+        });
+    }
+
+    // Volume Slider Input
+    if (volumeSlider) {
+        volumeSlider.addEventListener('input', () => {
+            const val = parseInt(volumeSlider.value, 10);
+            audioVolume = Math.max(0, Math.min(1, val / 100));
+            if (val === 0) {
+                isAudioMuted = true;
+            } else if (isAudioMuted) {
+                isAudioMuted = false;
+            }
+            applyAudioSettings();
+            if (!isAudioMuted && hasSeparateAudio && nativePlayer && !nativePlayer.paused && nativeAudio.paused) {
+                nativeAudio.play().catch(() => {});
+            }
+            showOsd(`🔊 Volume: ${val}%`);
+        });
+    }
+
+    // Paste & Stream Button Click
+    function handlePasteAndStream() {
+        const processUrl = (text) => {
+            if (!text) {
+                showToast('Clipboard kosong. Silakan salin link YouTube terlebih dahulu.');
+                return;
+            }
+            const vidId = extractYouTubeId(text);
+            if (vidId) {
+                if (searchInput) searchInput.value = text.trim();
+                showToast(`🚀 Memutar stream video: ${vidId}`);
+                playVideo(vidId, "Video dari Link", "YouTube Link", "");
+            } else {
+                showToast('Bukan link YouTube valid. Contoh: https://youtu.be/...');
+                if (searchInput) searchInput.focus();
+            }
+        };
+
+        if (cp) {
+            cp.exec('/usr/bin/pbpaste', (err, stdout) => {
+                const clip = (!err && stdout) ? stdout.trim() : '';
+                if (clip && extractYouTubeId(clip)) {
+                    processUrl(clip);
+                } else if (searchInput && searchInput.value.trim() && extractYouTubeId(searchInput.value.trim())) {
+                    processUrl(searchInput.value.trim());
+                } else if (clip) {
+                    processUrl(clip);
+                } else {
+                    if (searchInput) searchInput.focus();
+                    showToast('Salin (Copy) link YouTube terlebih dahulu, atau ketik di sini.');
+                }
+            });
+        } else if (navigator.clipboard && navigator.clipboard.readText) {
+            navigator.clipboard.readText().then(processUrl).catch(() => {
+                if (searchInput && searchInput.value.trim()) {
+                    processUrl(searchInput.value.trim());
+                }
+            });
+        } else if (searchInput && searchInput.value.trim()) {
+            processUrl(searchInput.value.trim());
+        }
+    }
+
+    if (btnPasteStream) {
+        btnPasteStream.addEventListener('click', handlePasteAndStream);
+    }
+
+    if (searchInput) {
+        searchInput.addEventListener('paste', () => {
+            setTimeout(() => {
+                const val = searchInput.value.trim();
+                const vidId = extractYouTubeId(val);
+                if (vidId) {
+                    showToast('🔗 Link YouTube terdeteksi, memuat stream...');
+                    playVideo(vidId, "Video dari Link", "YouTube Link", "");
+                }
+            }, 60);
         });
     }
 
@@ -1726,7 +1767,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         if (speedMenu) speedMenu.style.display = 'none';
     });
 
-    // Global Keyboard Shortcuts (Frame Step, Play/Pause, Seek)
+    // Global Keyboard Shortcuts (Frame Step, Play/Pause, Seek, Audio, Volume)
     window.addEventListener('keydown', (e) => {
         const active = document.activeElement;
         const isInput = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable);
@@ -1740,7 +1781,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
             stepFrame(true, e.shiftKey ? 10 : 1);
         } else if (e.key === ' ' || e.code === 'Space' || e.key === 'k' || e.key === 'K') {
             e.preventDefault();
-            if (playerMode === 'pro' && nativePlayer) {
+            if (nativePlayer) {
                 if (nativePlayer.paused) {
                     const p = nativePlayer.play();
                     if (p && typeof p.catch === 'function') p.catch(() => {});
@@ -1771,13 +1812,15 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         } else if (e.key === 'ArrowRight') {
             e.preventDefault();
             stepFrame(true, e.shiftKey ? 10 : 1);
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            changeVolumeRelative(0.05);
+        } else if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            changeVolumeRelative(-0.05);
         } else if (e.key === 'm' || e.key === 'M') {
             e.preventDefault();
-            if (nativePlayer) {
-                nativePlayer.muted = !nativePlayer.muted;
-                if (nativeAudio && hasSeparateAudio) nativeAudio.muted = nativePlayer.muted;
-                showOsd(nativePlayer.muted ? '🔇 Mute' : '🔊 Unmute');
-            }
+            toggleAudioMute();
         } else if (e.key === 'f' || e.key === 'F') {
             e.preventDefault();
             if (nativePlayer) {
