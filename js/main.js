@@ -169,12 +169,13 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
                 if (parsed.pathname === '/stream') {
                     const vidId = parsed.searchParams.get('v') || '';
+                    const quality = parsed.searchParams.get('q') || 'auto';
                     if (!/^[a-zA-Z0-9_-]{11}$/.test(vidId)) {
                         res.writeHead(400, { 'Content-Type': 'text/plain' });
                         return res.end('Invalid YouTube video id');
                     }
                     try {
-                        const directUrl = await resolveStreamUrl(vidId);
+                        const directUrl = await resolveStreamUrl(vidId, quality);
                         const target = new URL(directUrl);
                         const reqHeaders = { 'User-Agent': 'curl/8.7.1', 'Accept': '*/*' };
                         if (req.headers.range) reqHeaders['Range'] = req.headers.range;
@@ -262,6 +263,16 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     const btnCopyLink = document.getElementById('btnCopyLink');
     const btnOpenNowPlaying = document.getElementById('btnOpenNowPlaying');
 
+    const playerOsd = document.getElementById('playerOsd');
+    const btnStepBack = document.getElementById('btnStepBack');
+    const btnStepForward = document.getElementById('btnStepForward');
+    const btnQuality = document.getElementById('btnQuality');
+    const qualityMenu = document.getElementById('qualityMenu');
+    const currentQualityLabel = document.getElementById('currentQualityLabel');
+    const btnSpeed = document.getElementById('btnSpeed');
+    const speedMenu = document.getElementById('speedMenu');
+    const currentSpeedLabel = document.getElementById('currentSpeedLabel');
+
     const searchInput = document.getElementById('searchInput');
     const btnSearch = document.getElementById('btnSearch');
     const btnClearSearch = document.getElementById('btnClearSearch');
@@ -286,11 +297,14 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
     // State
     let currentVideo = null; // { id, title, channel, duration }
-    let playerMode = 'embed'; // Use the official YouTube embedded player
+    let playerMode = 'native'; // Native progressive MP4 stream with Range support
+    let currentQuality = 'auto'; // 'auto', '720', '480', '360'
+    let currentSpeed = 1.0;
     let isLooping = false;
     let isSearching = false;
     let lastDetectedClipboard = "";
     let searchDebounceTimer = null;
+    let osdTimer = null;
 
     // Local Storage Keys
     const STORAGE_KEY_FAVORITES = 'displayx_favorites';
@@ -381,23 +395,34 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     }
 
     const streamUrlCache = new Map();
-    function resolveStreamUrl(videoId) {
+    function resolveStreamUrl(videoId, quality = 'auto') {
+        const cacheKey = `${videoId}_${quality}`;
         return new Promise((resolve, reject) => {
-            if (streamUrlCache.has(videoId)) {
-                const entry = streamUrlCache.get(videoId);
+            if (streamUrlCache.has(cacheKey)) {
+                const entry = streamUrlCache.get(cacheKey);
                 if (Date.now() - entry.time < 15 * 60 * 1000) {
                     return resolve(entry.url);
                 }
             }
             if (!cp) return reject(new Error("child_process not available"));
             const ytDlp = resolveYtDlp();
-            const args = ['--force-ipv4', '-g', '-f', '18/22/b[ext=mp4]/best[ext=mp4]/best', `https://www.youtube.com/watch?v=${videoId}`];
+
+            let formatRule = '22/18/b[ext=mp4]/best[ext=mp4]/best';
+            if (quality === '720') {
+                formatRule = '22/b[ext=mp4][height<=720]/18/best[ext=mp4]';
+            } else if (quality === '480') {
+                formatRule = '18/b[ext=mp4][height<=480]/best[height<=480]';
+            } else if (quality === '360') {
+                formatRule = '18/b[ext=mp4][height<=360]';
+            }
+
+            const args = ['--force-ipv4', '-g', '-f', formatRule, `https://www.youtube.com/watch?v=${videoId}`];
             const env = getProcessEnv();
             cp.execFile(ytDlp, args, { env, timeout: 20000 }, (err, stdout, stderr) => {
                 if (err) return reject(new Error(stderr || err.message));
                 const url = stdout.trim().split('\n')[0].trim();
                 if (!url || !url.startsWith('http')) return reject(new Error("Invalid stream URL"));
-                streamUrlCache.set(videoId, { url, time: Date.now() });
+                streamUrlCache.set(cacheKey, { url, time: Date.now() });
                 resolve(url);
             });
         });
@@ -482,10 +507,12 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         loadEmbedStream(id);
     }
 
-    function loadEmbedStream(id) {
+    function loadEmbedStream(id, quality = currentQuality, seekTime = null) {
         if (!id || !nativePlayer) return;
 
         playerMode = 'native';
+        currentQuality = quality;
+
         if (playerFrame) {
             playerFrame.style.display = 'none';
             playerFrame.src = 'about:blank';
@@ -494,17 +521,101 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         nativePlayer.style.display = 'block';
         showPlayerLoading('Menyiapkan stream video...');
 
-        nativePlayer.onplaying = () => hidePlayerLoading();
+        nativePlayer.onplaying = () => {
+            hidePlayerLoading();
+            if (seekTime !== null && seekTime > 0) {
+                try { nativePlayer.currentTime = seekTime; } catch (e) {}
+            }
+            try { nativePlayer.playbackRate = currentSpeed; } catch (e) {}
+        };
         nativePlayer.oncanplay = () => hidePlayerLoading();
         nativePlayer.onerror = (e) => {
             hidePlayerLoading();
-            showToast('Gagal memutar video. Coba video lain.');
+            showToast('Gagal memuat kualitas ini. Mencoba kualitas standar...');
+            if (quality !== 'auto') {
+                loadEmbedStream(id, 'auto', seekTime);
+            }
         };
 
-        nativePlayer.src = `http://127.0.0.1:${PLAYER_PORT}/stream?v=${encodeURIComponent(id)}`;
+        const streamUrl = `http://127.0.0.1:${PLAYER_PORT}/stream?v=${encodeURIComponent(id)}&q=${encodeURIComponent(quality)}`;
+        nativePlayer.src = streamUrl;
         nativePlayer.load();
         const p = nativePlayer.play();
         if (p) p.catch(() => {});
+    }
+
+    function changeQuality(newQuality, label) {
+        if (!currentVideo || !currentVideo.id) return;
+        const prevTime = nativePlayer ? nativePlayer.currentTime : 0;
+        currentQuality = newQuality;
+        if (currentQualityLabel) currentQualityLabel.textContent = label;
+
+        document.querySelectorAll('#qualityMenu .dx-dropdown-item').forEach(item => {
+            item.classList.toggle('active', item.getAttribute('data-quality') === newQuality);
+        });
+
+        showOsd(`⚙️ Kualitas: ${label}`);
+        loadEmbedStream(currentVideo.id, newQuality, prevTime);
+    }
+
+    function changeSpeed(newSpeed, label) {
+        currentSpeed = parseFloat(newSpeed);
+        if (nativePlayer) {
+            nativePlayer.playbackRate = currentSpeed;
+        }
+        if (currentSpeedLabel) currentSpeedLabel.textContent = label;
+
+        document.querySelectorAll('#speedMenu .dx-dropdown-item').forEach(item => {
+            item.classList.toggle('active', parseFloat(item.getAttribute('data-speed')) === currentSpeed);
+        });
+
+        showOsd(`⚡ Kecepatan: ${label}`);
+    }
+
+    // Frame-by-Frame Navigation (Premiere Pro & YouTube Standard: , and .)
+    function stepFrame(forward = true) {
+        if (!nativePlayer || !currentVideo) return;
+        if (!nativePlayer.paused) {
+            nativePlayer.pause();
+        }
+        const frameDuration = 1 / 30; // 30 fps reference
+        if (forward) {
+            nativePlayer.currentTime = Math.min((nativePlayer.duration || Infinity), nativePlayer.currentTime + frameDuration);
+        } else {
+            nativePlayer.currentTime = Math.max(0, nativePlayer.currentTime - frameDuration);
+        }
+        showFrameOsd(forward);
+    }
+
+    function showFrameOsd(forward) {
+        const sec = nativePlayer ? nativePlayer.currentTime : 0;
+        const timecode = formatTimecode(sec);
+        const directionText = forward ? '+1 Frame ⏭️' : '⏮️ -1 Frame';
+        showOsd(`${directionText} • ${timecode}`);
+    }
+
+    function formatTimecode(totalSeconds) {
+        if (isNaN(totalSeconds) || totalSeconds < 0) totalSeconds = 0;
+        const hours = Math.floor(totalSeconds / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        const seconds = Math.floor(totalSeconds % 60);
+        const frames = Math.floor((totalSeconds % 1) * 30);
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}:${pad(frames)}`;
+    }
+
+    function showOsd(text) {
+        if (!playerOsd) return;
+        playerOsd.textContent = text;
+        playerOsd.style.display = 'flex';
+        playerOsd.style.opacity = '1';
+        playerOsd.style.transform = 'translateY(0)';
+        if (osdTimer) clearTimeout(osdTimer);
+        osdTimer = setTimeout(() => {
+            playerOsd.style.opacity = '0';
+            playerOsd.style.transform = 'translateY(-4px)';
+            setTimeout(() => { if (playerOsd) playerOsd.style.display = 'none'; }, 250);
+        }, 1100);
     }
 
     function togglePlayerMode() {
@@ -1134,6 +1245,133 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     // Close Clipboard Banner
     btnCloseClipboard.addEventListener('click', () => {
         clipboardBanner.style.display = 'none';
+    });
+
+    // Frame-by-Frame Step Buttons
+    if (btnStepBack) {
+        btnStepBack.addEventListener('click', () => stepFrame(false));
+    }
+    if (btnStepForward) {
+        btnStepForward.addEventListener('click', () => stepFrame(true));
+    }
+
+    // Quality Dropdown Menu Toggle
+    if (btnQuality) {
+        btnQuality.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isOpen = qualityMenu && qualityMenu.style.display !== 'none';
+            if (qualityMenu) qualityMenu.style.display = isOpen ? 'none' : 'block';
+            if (speedMenu) speedMenu.style.display = 'none';
+        });
+    }
+
+    // Speed Dropdown Menu Toggle
+    if (btnSpeed) {
+        btnSpeed.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isOpen = speedMenu && speedMenu.style.display !== 'none';
+            if (speedMenu) speedMenu.style.display = isOpen ? 'none' : 'block';
+            if (qualityMenu) qualityMenu.style.display = 'none';
+        });
+    }
+
+    // Quality Menu Item Clicks
+    if (qualityMenu) {
+        qualityMenu.querySelectorAll('.dx-dropdown-item').forEach(item => {
+            item.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const q = item.getAttribute('data-quality');
+                const label = item.textContent.replace('✨', '').trim();
+                changeQuality(q, label);
+                qualityMenu.style.display = 'none';
+            });
+        });
+    }
+
+    // Speed Menu Item Clicks
+    if (speedMenu) {
+        speedMenu.querySelectorAll('.dx-dropdown-item').forEach(item => {
+            item.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const s = item.getAttribute('data-speed');
+                const label = item.textContent.trim().split(' ')[0];
+                changeSpeed(s, label);
+                speedMenu.style.display = 'none';
+            });
+        });
+    }
+
+    // Close Dropdowns on Click Outside
+    document.addEventListener('click', () => {
+        if (qualityMenu) qualityMenu.style.display = 'none';
+        if (speedMenu) speedMenu.style.display = 'none';
+    });
+
+    // Global Keyboard Shortcuts (Frame Step, Play/Pause, Seek)
+    window.addEventListener('keydown', (e) => {
+        const active = document.activeElement;
+        const isInput = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable);
+        if (isInput) return; // Do not intercept if user is typing search query
+
+        if (e.key === ',' || e.code === 'Comma') {
+            e.preventDefault();
+            stepFrame(false);
+        } else if (e.key === '.' || e.code === 'Period') {
+            e.preventDefault();
+            stepFrame(true);
+        } else if (e.key === ' ' || e.code === 'Space' || e.key === 'k' || e.key === 'K') {
+            e.preventDefault();
+            if (nativePlayer) {
+                if (nativePlayer.paused) {
+                    nativePlayer.play();
+                    showOsd('▶ Play');
+                } else {
+                    nativePlayer.pause();
+                    showOsd('⏸️ Pause');
+                }
+            }
+        } else if (e.key === 'j' || e.key === 'J') {
+            e.preventDefault();
+            if (nativePlayer) {
+                nativePlayer.currentTime = Math.max(0, nativePlayer.currentTime - 5);
+                showOsd('⏪ -5s');
+            }
+        } else if (e.key === 'l' || e.key === 'L') {
+            e.preventDefault();
+            if (nativePlayer) {
+                nativePlayer.currentTime = Math.min((nativePlayer.duration || Infinity), nativePlayer.currentTime + 5);
+                showOsd('⏩ +5s');
+            }
+        } else if (e.key === 'ArrowLeft') {
+            e.preventDefault();
+            if (nativePlayer) {
+                const diff = e.shiftKey ? 1 : 5;
+                nativePlayer.currentTime = Math.max(0, nativePlayer.currentTime - diff);
+                showOsd(`⏪ -${diff}s`);
+            }
+        } else if (e.key === 'ArrowRight') {
+            e.preventDefault();
+            if (nativePlayer) {
+                const diff = e.shiftKey ? 1 : 5;
+                nativePlayer.currentTime = Math.min((nativePlayer.duration || Infinity), nativePlayer.currentTime + diff);
+                showOsd(`⏩ +${diff}s`);
+            }
+        } else if (e.key === 'm' || e.key === 'M') {
+            e.preventDefault();
+            if (nativePlayer) {
+                nativePlayer.muted = !nativePlayer.muted;
+                showOsd(nativePlayer.muted ? '🔇 Mute' : '🔊 Unmute');
+            }
+        } else if (e.key === 'f' || e.key === 'F') {
+            e.preventDefault();
+            if (nativePlayer) {
+                if (document.fullscreenElement) {
+                    document.exitFullscreen();
+                } else if (nativePlayer.requestFullscreen) {
+                    nativePlayer.requestFullscreen();
+                }
+            }
+        }
     });
 
     // Placeholder click triggers search focus

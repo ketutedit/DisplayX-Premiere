@@ -39,6 +39,9 @@
         <!-- Direct Native HTML5 Video Player (Zero Embed Blocks) -->
         <video id="nativePlayer" class="dx-player-frame" controls autoplay style="display: none;"></video>
 
+        <!-- On-Screen Display Badge (Frame Step & Shortcuts) -->
+        <div class="dx-player-osd" id="playerOsd" style="display: none;"></div>
+
         <!-- Loading Spinner Overlay -->
         <div class="dx-player-loading" id="playerLoading" style="display: none;">
             <div class="dx-spinner"></div>
@@ -63,7 +66,35 @@
             </div>
         </div>
         <div class="dx-now-playing-actions">
-            <button class="dx-action-pill" id="btnTogglePlayerMode" title="Memutar menggunakan YouTube Player resmi">📺 YouTube</button>
+            <!-- Frame-by-Frame Navigation Buttons -->
+            <button class="dx-action-pill" id="btnStepBack" title="Mundur 1 Frame (Keyboard: ,)">⏮️ Frame</button>
+            <button class="dx-action-pill" id="btnStepForward" title="Maju 1 Frame (Keyboard: .)">Frame ⏭️</button>
+
+            <!-- Quality Settings Dropdown -->
+            <div class="dx-dropdown-wrap">
+                <button class="dx-action-pill" id="btnQuality" title="Pengaturan Kualitas Video">⚙️ <span id="currentQualityLabel">Auto</span></button>
+                <div class="dx-dropdown-menu" id="qualityMenu" style="display: none;">
+                    <div class="dx-dropdown-item active" data-quality="auto">✨ Auto (Best)</div>
+                    <div class="dx-dropdown-item" data-quality="720">720p HD</div>
+                    <div class="dx-dropdown-item" data-quality="480">480p</div>
+                    <div class="dx-dropdown-item" data-quality="360">360p (Hemat Data)</div>
+                </div>
+            </div>
+
+            <!-- Playback Speed Dropdown -->
+            <div class="dx-dropdown-wrap">
+                <button class="dx-action-pill" id="btnSpeed" title="Kecepatan Putar (Playback Speed)">⚡ <span id="currentSpeedLabel">1x</span></button>
+                <div class="dx-dropdown-menu" id="speedMenu" style="display: none;">
+                    <div class="dx-dropdown-item" data-speed="0.25">0.25x (Super Slow)</div>
+                    <div class="dx-dropdown-item" data-speed="0.5">0.5x (Slow Motion)</div>
+                    <div class="dx-dropdown-item" data-speed="0.75">0.75x</div>
+                    <div class="dx-dropdown-item active" data-speed="1">1x (Normal)</div>
+                    <div class="dx-dropdown-item" data-speed="1.25">1.25x</div>
+                    <div class="dx-dropdown-item" data-speed="1.5">1.5x</div>
+                    <div class="dx-dropdown-item" data-speed="2">2x (Cepat)</div>
+                </div>
+            </div>
+
             <button class="dx-action-pill" id="btnBookmark" title="Simpan ke Favorit">
                 <span id="bookmarkIcon">&#9734;</span> Favorit
             </button>
