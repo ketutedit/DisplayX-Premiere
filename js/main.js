@@ -1551,6 +1551,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                      onclick="window.DisplayX.play('${item.id}', '${escapeHtml(item.title)}', '${escapeHtml(item.channel)}', '${escapeHtml(item.duration)}')">
                     <div class="dx-thumb-wrap">
                         <img src="${thumbUrl}" data-video-id="${item.id}" data-fallback-index="0" alt="${escapeHtml(item.title)}" loading="lazy" onerror="window.DisplayX.thumbnailFallback(this)">
+                        <button type="button" class="dx-card-dl-btn" title="Download video ini ke Bin Premiere Pro" onclick="event.stopPropagation(); window.ArdaneYT.download('${item.id}', '${escapeHtml(item.title)}')">&#11015; Download</button>
                         ${item.duration ? `<span class="dx-dur-badge">${escapeHtml(item.duration)}</span>` : ''}
                         <div class="dx-play-overlay">
                             <div class="dx-play-circle">&#9658;</div>
@@ -1568,10 +1569,15 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         }).join('');
     }
 
-    // Export global play method for inline card onclick
+    // Export global play & download methods for inline card onclick
     window.ArdaneYT = window.DisplayX = {
         play: function (id, title, channel, duration) {
             playVideo(id, title, channel, duration);
+        },
+        download: function (id) {
+            if (!id) return;
+            const url = `https://www.youtube.com/watch?v=${id}`;
+            sendVideoToDownloader(url, null, null);
         },
         thumbnailFallback: function (img) {
             if (!img) return;
@@ -1654,8 +1660,27 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     }
 
     // ==========================================
-    // CLIPBOARD AUTO-DETECTION
+    // CLIPBOARD AUTO-DETECTION (YouTube & Multi-Platform)
     // ==========================================
+    const btnDownloadClipboard = document.getElementById('btnDownloadClipboard');
+
+    function isSupportedDownloadMediaUrl(url) {
+        if (!url || typeof url !== 'string') return false;
+        const lower = url.trim().toLowerCase();
+        return (
+            lower.includes('youtube.com/watch') ||
+            lower.includes('youtu.be/') ||
+            lower.includes('youtube.com/shorts') ||
+            lower.includes('tiktok.com/') ||
+            lower.includes('instagram.com/p/') ||
+            lower.includes('instagram.com/reel/') ||
+            lower.includes('facebook.com/') ||
+            lower.includes('fb.watch/') ||
+            lower.includes('twitter.com/') ||
+            lower.includes('x.com/')
+        );
+    }
+
     function checkClipboard() {
         if (!cp) return;
         cp.exec('/usr/bin/pbpaste', (err, stdout) => {
@@ -1663,15 +1688,30 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
             const text = stdout.trim();
             if (text && text !== lastDetectedClipboard) {
                 const vidId = extractYouTubeId(text);
-                if (vidId) {
+                const isMedia = isSupportedDownloadMediaUrl(text);
+                if (vidId || isMedia) {
                     lastDetectedClipboard = text;
-                    clipboardText.textContent = `Link YouTube terdeteksi: ${text.length > 36 ? text.substring(0, 36) + '...' : text}`;
+                    const shortText = text.length > 34 ? text.substring(0, 34) + '...' : text;
+                    clipboardText.textContent = vidId
+                        ? `Link YouTube: ${shortText}`
+                        : `Link Media: ${shortText}`;
                     clipboardBanner.style.display = 'flex';
 
-                    btnPlayClipboard.onclick = () => {
-                        playVideo(vidId, "Video dari Clipboard", "YouTube", "");
-                        clipboardBanner.style.display = 'none';
-                    };
+                    if (btnPlayClipboard) {
+                        btnPlayClipboard.style.display = vidId ? 'inline-block' : 'none';
+                        btnPlayClipboard.onclick = () => {
+                            switchModeTab('player');
+                            playVideo(vidId, "Video dari Clipboard", "YouTube", "");
+                            clipboardBanner.style.display = 'none';
+                        };
+                    }
+
+                    if (btnDownloadClipboard) {
+                        btnDownloadClipboard.onclick = () => {
+                            clipboardBanner.style.display = 'none';
+                            sendVideoToDownloader(text, null, null);
+                        };
+                    }
                 }
             }
         });
@@ -2106,8 +2146,9 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     // Global Keyboard Shortcuts (NLE Standard: In/Out, Loop, Frame Step, Play/Pause, Seek, Audio)
     window.addEventListener('keydown', (e) => {
         const active = document.activeElement;
-        const isInput = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable);
+        const isInput = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT' || active.isContentEditable);
         if (isInput) return; // Do not intercept if user is typing in URL input or search input
+        if (paneDownloader && paneDownloader.style.display !== 'none') return; // Do not intercept in Downloader tab
 
         if (e.key === 'i' || e.key === 'I') {
             e.preventDefault();
@@ -2182,6 +2223,1136 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         searchInput.focus();
     });
 
+    // ==========================================================================
+    // MODE NAVIGATION TABS & MULTI-PLATFORM DOWNLOADER + BIN IMPORTER ENGINE
+    // ==========================================================================
+    const tabBtnPlayer = document.getElementById('tabBtnPlayer');
+    const tabBtnDownloader = document.getElementById('tabBtnDownloader');
+    const panePlayer = document.getElementById('panePlayer');
+    const paneDownloader = document.getElementById('paneDownloader');
+    const btnSendToDownloader = document.getElementById('btnSendToDownloader');
+
+    // Downloader DOM Elements
+    const statusDot = document.getElementById('statusDot');
+    const statusText = document.getElementById('statusText');
+    const btnRefresh = document.getElementById('btnRefresh');
+    const savePathText = document.getElementById('savePathText');
+
+    const ytUrlInput = document.getElementById('ytUrl');
+    const btnPasteDlUrl = document.getElementById('btnPasteDlUrl');
+    const btnAnalyze = document.getElementById('btnAnalyze');
+    const analyzeIcon = document.getElementById('analyzeIcon');
+    const analyzeText = document.getElementById('analyzeText');
+    const platformBadge = document.getElementById('platformBadge');
+
+    const formatSelect = document.getElementById('formatSelect');
+    const detectStatus = document.getElementById('detectStatus');
+
+    const videoInfoBox = document.getElementById('videoInfoBox');
+    const videoThumb = document.getElementById('videoThumb');
+    const videoTitle = document.getElementById('videoTitle');
+    const videoDuration = document.getElementById('videoDuration');
+    const videoMaxRes = document.getElementById('videoMaxRes');
+
+    const checkCookies = document.getElementById('checkCookies');
+    const checkSegment = document.getElementById('checkSegment');
+    const segmentInputs = document.getElementById('segmentInputs');
+    const tcHeaderHint = document.getElementById('tcHeaderHint');
+    const startTimeInput = document.getElementById('startTime');
+    const endTimeInput = document.getElementById('endTime');
+    const binNameInput = document.getElementById('binName');
+
+    const startH = document.getElementById('startH');
+    const startM = document.getElementById('startM');
+    const startS = document.getElementById('startS');
+    const endH = document.getElementById('endH');
+    const endM = document.getElementById('endM');
+    const endS = document.getElementById('endS');
+    const btnResetStart = document.getElementById('btnResetStart');
+    const btnSetFullEnd = document.getElementById('btnSetFullEnd');
+    const tcBadge = document.getElementById('tcBadge');
+    const tcDurationText = document.getElementById('tcDurationText');
+    const btnNudgeMinus10 = document.getElementById('btnNudgeMinus10');
+    const btnNudgePlus10 = document.getElementById('btnNudgePlus10');
+    const btnNudgeMinus60 = document.getElementById('btnNudgeMinus60');
+    const btnNudgePlus60 = document.getElementById('btnNudgePlus60');
+
+    const btnDownload = document.getElementById('btnDownload');
+    const btnDownloadText = document.getElementById('btnDownloadText');
+    const toastBox = document.getElementById('toastBox');
+
+    const progressCard = document.getElementById('progressCard');
+    const progressPhase = document.getElementById('progressPhase');
+    const progressPercent = document.getElementById('progressPercent');
+    const progressBar = document.getElementById('progressBar');
+    const progressSpeed = document.getElementById('progressSpeed');
+    const progressEta = document.getElementById('progressEta');
+
+    const logToggle = document.getElementById('logToggle');
+    const logContent = document.getElementById('logContent');
+    const logClearBtn = document.getElementById('logClearBtn');
+
+    // Downloader State
+    let currentProjectPath = "";
+    let currentTargetFolder = "";
+    let isProjectValid = false;
+    let isDownloading = false;
+    let isAnalyzing = false;
+    let currentVideoDurationSec = 0;
+    let activeAnalyzedUrl = "";
+    let preserveCustomSegment = false;
+
+    function switchModeTab(tabName) {
+        const isDownloader = (tabName === 'downloader');
+        if (tabBtnPlayer) tabBtnPlayer.classList.toggle('active', !isDownloader);
+        if (tabBtnDownloader) tabBtnDownloader.classList.toggle('active', isDownloader);
+        if (panePlayer) panePlayer.style.display = isDownloader ? 'none' : 'flex';
+        if (paneDownloader) paneDownloader.style.display = isDownloader ? 'flex' : 'none';
+
+        if (isDownloader) {
+            if (nativePlayer && !nativePlayer.paused) {
+                try { nativePlayer.pause(); } catch (e) {}
+            }
+            if (nativeAudio && !nativeAudio.paused) {
+                try { nativeAudio.pause(); } catch (e) {}
+            }
+            checkProjectStatus();
+            const mainScroll = document.getElementById('mainScroll');
+            if (mainScroll) mainScroll.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+    }
+
+    if (tabBtnPlayer) {
+        tabBtnPlayer.addEventListener('click', () => switchModeTab('player'));
+    }
+    if (tabBtnDownloader) {
+        tabBtnDownloader.addEventListener('click', () => switchModeTab('downloader'));
+    }
+
+    // Bridge: Send Video (and optional In/Out Range) from Player to Downloader Tab
+    function sendVideoToDownloader(url, customStartSec = null, customEndSec = null) {
+        if (!url) return;
+        switchModeTab('downloader');
+
+        if (ytUrlInput) {
+            ytUrlInput.value = url;
+            updatePlatformBadge(url);
+        }
+
+        if (customStartSec !== null || customEndSec !== null) {
+            preserveCustomSegment = true;
+            const sSec = customStartSec !== null ? Math.floor(customStartSec) : 0;
+            const eSec = customEndSec !== null ? Math.ceil(customEndSec) : (nativePlayer && nativePlayer.duration ? Math.ceil(nativePlayer.duration) : sSec + 60);
+            if (checkSegment) checkSegment.checked = true;
+            if (segmentInputs) segmentInputs.style.display = 'flex';
+            if (tcHeaderHint) tcHeaderHint.style.display = 'inline';
+            setTimecodeFromSeconds('start', sSec);
+            setTimecodeFromSeconds('end', Math.max(sSec + 1, eSec));
+            updateTimecodeValues();
+            showToast(`✂️ Rentang In-Out (${formatTimecode(sSec)} - ${formatTimecode(eSec)}) disinkronkan ke Downloader!`);
+        } else {
+            preserveCustomSegment = false;
+        }
+
+        analyzeCurrentLink();
+    }
+
+    if (btnSendToDownloader) {
+        btnSendToDownloader.addEventListener('click', () => {
+            if (!currentVideo || !currentVideo.id) {
+                showToast("Putar atau pilih video terlebih dahulu!");
+                return;
+            }
+            const url = `https://www.youtube.com/watch?v=${currentVideo.id}`;
+            if (loopIn !== null || loopOut !== null) {
+                const sSec = loopIn !== null ? loopIn : 0;
+                const eSec = loopOut !== null ? loopOut : (nativePlayer && nativePlayer.duration ? nativePlayer.duration : null);
+                sendVideoToDownloader(url, sSec, eSec);
+            } else {
+                sendVideoToDownloader(url, null, null);
+            }
+        });
+    }
+
+    function getPlatformInfo(url) {
+        if (!url) return { name: "YouTube • TikTok • IG • FB", icon: "", color: "#8bb8e8" };
+        const u = url.toLowerCase();
+        if (u.includes("youtube.com") || u.includes("youtu.be")) {
+            return { name: "YouTube", icon: "▶️", color: "#ff4d4d" };
+        }
+        if (u.includes("instagram.com")) {
+            return { name: "Instagram", icon: "📷", color: "#e1306c" };
+        }
+        if (u.includes("tiktok.com")) {
+            return { name: "TikTok", icon: "🎵", color: "#00f2fe" };
+        }
+        if (u.includes("facebook.com") || u.includes("fb.watch")) {
+            return { name: "Facebook", icon: "👥", color: "#1877f2" };
+        }
+        if (u.includes("twitter.com") || u.includes("x.com")) {
+            return { name: "X / Twitter", icon: "🐦", color: "#1da1f2" };
+        }
+        return { name: "Media Web", icon: "🌐", color: "#1473e6" };
+    }
+
+    function updatePlatformBadge(url) {
+        if (!platformBadge) return;
+        const p = getPlatformInfo(url);
+        platformBadge.textContent = `${p.icon} ${p.name}`.trim();
+        platformBadge.style.color = p.color;
+    }
+
+    function resolveDownloaderBinaries() {
+        const ytDlpPath = getYtDlpPath();
+        let ffmpegPath = '/opt/homebrew/bin/ffmpeg';
+        if (fs && fs.existsSync && !fs.existsSync(ffmpegPath)) {
+            if (fs.existsSync('/usr/local/bin/ffmpeg')) {
+                ffmpegPath = '/usr/local/bin/ffmpeg';
+            } else {
+                ffmpegPath = 'ffmpeg';
+            }
+        }
+
+        let ffprobePath = '/opt/homebrew/bin/ffprobe';
+        if (fs && fs.existsSync && !fs.existsSync(ffprobePath)) {
+            if (fs.existsSync('/usr/local/bin/ffprobe')) {
+                ffprobePath = '/usr/local/bin/ffprobe';
+            } else {
+                ffprobePath = 'ffprobe';
+            }
+        }
+
+        return { ytDlpPath, ffmpegPath, ffprobePath };
+    }
+
+    function appendLog(message) {
+        console.log(message);
+        if (!logContent) return;
+        const timestamp = new Date().toLocaleTimeString();
+        logContent.textContent += `[${timestamp}] ${message}\n`;
+        logContent.scrollTop = logContent.scrollHeight;
+    }
+
+    function showDlToast(message, type = 'success', duration = 5000) {
+        showToast(message);
+        if (!toastBox) return;
+        toastBox.className = `toast ${type}`;
+        toastBox.textContent = message;
+        toastBox.style.display = 'block';
+        if (duration > 0) {
+            setTimeout(() => {
+                toastBox.style.display = 'none';
+            }, duration);
+        }
+    }
+
+    function checkProjectStatus() {
+        if (!statusDot || !statusText) return;
+        csInterface.evalScript('getProjectInfo()', function (result) {
+            try {
+                if (!result || result === 'EvalScript error.') {
+                    statusDot.className = 'dot disconnected';
+                    statusText.textContent = "Tidak dapat terhubung ke Premiere Pro";
+                    return;
+                }
+
+                const info = JSON.parse(result);
+                appendLog(`Project check: ${JSON.stringify(info)}`);
+
+                if (!info.hasProject) {
+                    statusDot.className = 'dot disconnected';
+                    statusText.textContent = "Tidak ada project terbuka";
+                    if (savePathText) savePathText.textContent = "Buka atau buat project di Premiere";
+                    isProjectValid = false;
+                    if (btnDownload) btnDownload.disabled = true;
+                    return;
+                }
+
+                const hasPath = Boolean(info.projectPath && info.projectPath.length > 0);
+                if (!hasPath) {
+                    statusDot.className = 'dot';
+                    statusText.textContent = "Project belum disimpan (Unsaved)";
+                    if (savePathText) savePathText.textContent = "Simpan project (Cmd+S / Ctrl+S) terlebih dahulu!";
+                    isProjectValid = false;
+                    if (btnDownload) btnDownload.disabled = true;
+                    return;
+                }
+
+                currentProjectPath = info.projectPath;
+                const projectDir = path.dirname(currentProjectPath);
+                currentTargetFolder = path.join(projectDir, "YT Downloads");
+
+                if (fs && fs.mkdirSync && !fs.existsSync(currentTargetFolder)) {
+                    fs.mkdirSync(currentTargetFolder, { recursive: true });
+                }
+
+                statusDot.className = 'dot connected';
+                statusText.textContent = `Aktif: ${info.projectName || 'Project'}`;
+                if (savePathText) savePathText.textContent = currentTargetFolder;
+                isProjectValid = true;
+                if (btnDownload) btnDownload.disabled = isDownloading;
+            } catch (e) {
+                appendLog("Error parsing getProjectInfo: " + e.message);
+                statusDot.className = 'dot disconnected';
+                statusText.textContent = "Error komunikasi ExtendScript";
+            }
+        });
+    }
+
+    function fetchThumbnailBase64(thumbUrl, callback) {
+        if (!thumbUrl || (!https && !http)) {
+            return callback(thumbUrl || "");
+        }
+        try {
+            const client = thumbUrl.startsWith('https') ? https : http;
+            client.get(thumbUrl, { headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)' } }, (res) => {
+                if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                    return fetchThumbnailBase64(res.headers.location, callback);
+                }
+                const chunks = [];
+                res.on('data', chunk => chunks.push(chunk));
+                res.on('end', () => {
+                    const buf = Buffer.concat(chunks);
+                    const mime = res.headers['content-type'] || 'image/jpeg';
+                    const dataUri = `data:${mime};base64,${buf.toString('base64')}`;
+                    callback(dataUri);
+                });
+            }).on('error', (err) => {
+                appendLog(`Thumbnail note: ${err.message}`);
+                callback(thumbUrl);
+            });
+        } catch (e) {
+            callback(thumbUrl);
+        }
+    }
+
+    function resetPreviewState() {
+        if (videoInfoBox) videoInfoBox.style.display = 'none';
+        if (videoThumb) videoThumb.src = '';
+        if (detectStatus) detectStatus.textContent = '';
+        activeAnalyzedUrl = '';
+        currentVideoDurationSec = 0;
+    }
+
+    function formatSecondsToTime(sec) {
+        if (!sec || isNaN(sec)) return "--:--";
+        const total = Math.floor(sec);
+        const h = Math.floor(total / 3600);
+        const m = Math.floor((total % 3600) / 60);
+        const s = Math.floor(total % 60);
+        if (h > 0) {
+            return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+        }
+        return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    }
+
+    function analyzeCurrentLink() {
+        if (isAnalyzing || isDownloading || !ytUrlInput) return;
+
+        const url = ytUrlInput.value.trim();
+        if (!url) {
+            showDlToast("Harap masukkan link media terlebih dahulu!", "error");
+            ytUrlInput.focus();
+            return;
+        }
+
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            showDlToast("URL tidak valid. Masukkan link yang lengkap (https://...).", "error");
+            return;
+        }
+
+        isAnalyzing = true;
+        if (btnAnalyze) btnAnalyze.disabled = true;
+        if (analyzeIcon) analyzeIcon.innerHTML = '&#9203;';
+        if (analyzeText) analyzeText.textContent = 'Mengecek...';
+        if (detectStatus) {
+            detectStatus.textContent = '⏳ Mengambil info video...';
+            detectStatus.style.color = '#7ab7ff';
+        }
+
+        resetPreviewState();
+
+        const { ytDlpPath } = resolveDownloaderBinaries();
+        appendLog(`Memulai analisis URL: ${url}`);
+
+        const args = [
+            '-J',
+            '--no-playlist',
+            '--user-agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+            url
+        ];
+
+        if (checkCookies && checkCookies.checked) {
+            args.splice(1, 0, '--cookies-from-browser', 'safari');
+            appendLog("Menggunakan cookie Safari untuk otentikasi");
+        }
+
+        let stdoutData = "";
+        let stderrData = "";
+
+        const metaProc = cp.spawn(ytDlpPath, args, { env: getEnv() });
+
+        metaProc.stdout.on('data', (chunk) => {
+            stdoutData += chunk.toString();
+        });
+
+        metaProc.stderr.on('data', (chunk) => {
+            stderrData += chunk.toString();
+        });
+
+        metaProc.on('close', (code) => {
+            isAnalyzing = false;
+            if (btnAnalyze) btnAnalyze.disabled = false;
+            if (analyzeIcon) analyzeIcon.innerHTML = '&#128269;';
+            if (analyzeText) analyzeText.textContent = 'Analyze';
+
+            if (code === 0 && stdoutData) {
+                try {
+                    const info = JSON.parse(stdoutData);
+                    activeAnalyzedUrl = url;
+                    appendLog(`Media terdeteksi: "${info.title}" [${info.extractor || 'Web'}]`);
+
+                    currentVideoDurationSec = Number(info.duration) || 0;
+                    if (videoDuration) videoDuration.textContent = info.duration_string || formatSecondsToTime(currentVideoDurationSec);
+
+                    // Sync segment timecode picker unless custom In/Out was transferred from Player
+                    if (!preserveCustomSegment) {
+                        setTimecodeFromSeconds('start', 0);
+                        if (currentVideoDurationSec > 0) {
+                            setTimecodeFromSeconds('end', currentVideoDurationSec);
+                        } else {
+                            setTimecodeFromSeconds('end', 60);
+                        }
+                    }
+                    preserveCustomSegment = false;
+                    updateTimecodeValues();
+
+                    if (videoInfoBox) videoInfoBox.style.display = 'flex';
+                    if (videoTitle) videoTitle.textContent = info.title || (getPlatformInfo(url).name + " Video");
+
+                    if (info.thumbnail && videoThumb) {
+                        fetchThumbnailBase64(info.thumbnail, (b64) => {
+                            videoThumb.src = b64;
+                        });
+                    }
+
+                    const formats = info.formats || [];
+                    const videoFormats = formats.filter(f => f.vcodec && f.vcodec !== 'none' && f.height);
+                    const heights = Array.from(new Set(videoFormats.map(f => Number(f.height))))
+                                         .filter(h => !isNaN(h) && h > 0)
+                                         .sort((a, b) => b - a);
+
+                    appendLog(`Resolusi terdeteksi: ${heights.length ? heights.join(', ') + 'p' : 'Default Stream'}`);
+
+                    if (formatSelect) {
+                        formatSelect.innerHTML = '';
+                        const platform = getPlatformInfo(url).name;
+
+                        if (heights.length > 0) {
+                            const topRes = heights[0];
+                            if (videoMaxRes) videoMaxRes.textContent = topRes >= 2160 ? '4K UHD' : (topRes >= 1440 ? '2K QHD' : `${topRes}p`);
+
+                            const bestOpt = document.createElement('option');
+                            bestOpt.value = 'best_video';
+                            bestOpt.textContent = `⭐ Kualitas Terbaik (${topRes}p - H.264 MP4)`;
+                            formatSelect.appendChild(bestOpt);
+
+                            heights.forEach(h => {
+                                const opt = document.createElement('option');
+                                opt.value = String(h);
+                                let label = `${h}p (H.264 MP4)`;
+                                if (h >= 2160) label = `🎬 4K Ultra HD (${h}p H.264)`;
+                                else if (h >= 1440) label = `🎬 2K Quad HD (${h}p H.264)`;
+                                else if (h >= 1080) label = `🎬 Full HD (${h}p H.264)`;
+                                else if (h >= 720) label = `🎬 HD (${h}p H.264)`;
+                                else if (h >= 480) label = `Standard (${h}p H.264)`;
+                                else label = `Low (${h}p H.264)`;
+
+                                opt.textContent = label;
+                                if (h === 1080 || (topRes < 1080 && h === topRes)) {
+                                    opt.selected = true;
+                                }
+                                formatSelect.appendChild(opt);
+                            });
+                        } else {
+                            if (videoMaxRes) videoMaxRes.textContent = "HD MP4";
+                            const defaultOpt = document.createElement('option');
+                            defaultOpt.value = 'best_video';
+                            defaultOpt.textContent = `⭐ Kualitas Terbaik (${platform} H.264 MP4)`;
+                            formatSelect.appendChild(defaultOpt);
+                        }
+
+                        const mp3Opt = document.createElement('option');
+                        mp3Opt.value = 'mp3';
+                        mp3Opt.textContent = '🎵 Audio Saja (MP3 320kbps)';
+                        formatSelect.appendChild(mp3Opt);
+
+                        const wavOpt = document.createElement('option');
+                        wavOpt.value = 'wav';
+                        wavOpt.textContent = '🎵 Audio Saja (WAV Lossless)';
+                        formatSelect.appendChild(wavOpt);
+                    }
+
+                    if (detectStatus) {
+                        detectStatus.textContent = `✅ ${getPlatformInfo(url).name} Siap Didownload`;
+                        detectStatus.style.color = "#30d158";
+                    }
+                    showDlToast(`Media "${info.title || 'Video'}" siap didownload!`, "success", 3000);
+                } catch (parseErr) {
+                    appendLog(`JSON parse note: ${parseErr.message}`);
+                    if (detectStatus) detectStatus.textContent = "Format standar siap";
+                }
+            } else {
+                appendLog(`Analisis gagal (code ${code}): ${stderrData}`);
+                if (detectStatus) {
+                    detectStatus.textContent = "Gagal memuat info media";
+                    detectStatus.style.color = "#ff6961";
+                }
+                showDlToast("Gagal menganalisis link. Pastikan link publik atau coba centang Cookie.", "error", 5000);
+            }
+        });
+
+        metaProc.on('error', (err) => {
+            isAnalyzing = false;
+            if (btnAnalyze) btnAnalyze.disabled = false;
+            if (analyzeIcon) analyzeIcon.innerHTML = '&#128269;';
+            if (analyzeText) analyzeText.textContent = 'Analyze';
+            appendLog(`Spawn analyze error: ${err.message}`);
+            showDlToast(`Error: ${err.message}`, "error");
+        });
+    }
+
+    if (ytUrlInput) {
+        ytUrlInput.addEventListener('input', function () {
+            const val = this.value.trim();
+            updatePlatformBadge(val);
+            if (val !== activeAnalyzedUrl) {
+                resetPreviewState();
+            }
+        });
+
+        ytUrlInput.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                analyzeCurrentLink();
+            }
+        });
+
+        ytUrlInput.addEventListener('paste', function () {
+            setTimeout(() => {
+                const val = ytUrlInput.value.trim();
+                updatePlatformBadge(val);
+                resetPreviewState();
+                if (val.length > 10) {
+                    analyzeCurrentLink();
+                }
+            }, 80);
+        });
+    }
+
+    if (btnPasteDlUrl) {
+        btnPasteDlUrl.addEventListener('click', () => {
+            if (!cp) return;
+            cp.exec('/usr/bin/pbpaste', (err, stdout) => {
+                if (!err && stdout && stdout.trim()) {
+                    const clip = stdout.trim();
+                    if (ytUrlInput) ytUrlInput.value = clip;
+                    updatePlatformBadge(clip);
+                    analyzeCurrentLink();
+                } else {
+                    showDlToast("Clipboard kosong.", "error", 2000);
+                }
+            });
+        });
+    }
+
+    if (btnAnalyze) {
+        btnAnalyze.addEventListener('click', analyzeCurrentLink);
+    }
+
+    // Timecode Segment Controller
+    function getTimecodeSeconds(type) {
+        const hInput = type === 'start' ? startH : endH;
+        const mInput = type === 'start' ? startM : endM;
+        const sInput = type === 'start' ? startS : endS;
+
+        const h = parseInt(hInput ? hInput.value : 0, 10) || 0;
+        const m = parseInt(mInput ? mInput.value : 0, 10) || 0;
+        const s = parseInt(sInput ? sInput.value : 0, 10) || 0;
+
+        return (h * 3600) + (m * 60) + s;
+    }
+
+    function setTimecodeFromSeconds(type, totalSec) {
+        let sec = Math.max(0, Math.floor(Number(totalSec) || 0));
+        const h = Math.floor(sec / 3600);
+        const m = Math.floor((sec % 3600) / 60);
+        const s = Math.floor(sec % 60);
+
+        const hInput = type === 'start' ? startH : endH;
+        const mInput = type === 'start' ? startM : endM;
+        const sInput = type === 'start' ? startS : endS;
+
+        if (hInput) hInput.value = String(Math.min(99, h)).padStart(2, '0');
+        if (mInput) mInput.value = String(Math.min(59, m)).padStart(2, '0');
+        if (sInput) sInput.value = String(Math.min(59, s)).padStart(2, '0');
+    }
+
+    function updateTimecodeValues() {
+        if (!startH || !endH) return;
+
+        const startSec = getTimecodeSeconds('start');
+        const endSec = getTimecodeSeconds('end');
+
+        const sH = String(parseInt(startH.value, 10) || 0).padStart(2, '0');
+        const sM = String(parseInt(startM.value, 10) || 0).padStart(2, '0');
+        const sS = String(parseInt(startS.value, 10) || 0).padStart(2, '0');
+        const eH = String(parseInt(endH.value, 10) || 0).padStart(2, '0');
+        const eM = String(parseInt(endM.value, 10) || 0).padStart(2, '0');
+        const eS = String(parseInt(endS.value, 10) || 0).padStart(2, '0');
+
+        if (startTimeInput) startTimeInput.value = `${sH}:${sM}:${sS}`;
+        if (endTimeInput) endTimeInput.value = `${eH}:${eM}:${eS}`;
+
+        const diffSec = endSec - startSec;
+
+        if (diffSec <= 0) {
+            if (tcBadge) tcBadge.classList.add('error');
+            if (tcDurationText) tcDurationText.textContent = 'Selesai harus > Mulai!';
+        } else {
+            if (tcBadge) tcBadge.classList.remove('error');
+            const h = Math.floor(diffSec / 3600);
+            const m = Math.floor((diffSec % 3600) / 60);
+            const s = Math.floor(diffSec % 60);
+            let timeStr = "";
+            if (h > 0) {
+                timeStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+            } else {
+                timeStr = `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+            }
+            if (tcDurationText) {
+                tcDurationText.textContent = `${timeStr} (${diffSec}s)`;
+            }
+        }
+    }
+
+    function setupTcInputBehavior(input, maxVal, nextInput, prevInput) {
+        if (!input) return;
+
+        input.addEventListener('focus', function () {
+            this.select();
+        });
+
+        input.addEventListener('blur', function () {
+            let val = parseInt(this.value, 10);
+            if (isNaN(val) || val < 0) val = 0;
+            if (val > maxVal) val = maxVal;
+            this.value = String(val).padStart(2, '0');
+            updateTimecodeValues();
+        });
+
+        input.addEventListener('wheel', function (e) {
+            e.preventDefault();
+            let val = parseInt(this.value, 10) || 0;
+            if (e.deltaY < 0) {
+                val = Math.min(maxVal, val + 1);
+            } else {
+                val = Math.max(0, val - 1);
+            }
+            this.value = String(val).padStart(2, '0');
+            updateTimecodeValues();
+        }, { passive: false });
+
+        input.addEventListener('keydown', function (e) {
+            if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                let val = (parseInt(this.value, 10) || 0) + 1;
+                if (val > maxVal) val = maxVal;
+                this.value = String(val).padStart(2, '0');
+                updateTimecodeValues();
+            } else if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                let val = (parseInt(this.value, 10) || 0) - 1;
+                if (val < 0) val = 0;
+                this.value = String(val).padStart(2, '0');
+                updateTimecodeValues();
+            } else if (e.key === 'ArrowRight' && nextInput && this.selectionStart === this.value.length) {
+                nextInput.focus();
+                nextInput.select();
+            } else if (e.key === 'ArrowLeft' && prevInput && this.selectionStart === 0) {
+                prevInput.focus();
+                prevInput.select();
+            }
+        });
+
+        input.addEventListener('input', function () {
+            let raw = this.value.replace(/[^0-9]/g, '');
+            if (raw.length >= 2) {
+                let val = parseInt(raw, 10);
+                if (val > maxVal) val = maxVal;
+                this.value = String(val).padStart(2, '0');
+                if (nextInput) {
+                    nextInput.focus();
+                    nextInput.select();
+                }
+            }
+            updateTimecodeValues();
+        });
+    }
+
+    setupTcInputBehavior(startH, 99, startM, null);
+    setupTcInputBehavior(startM, 59, startS, startH);
+    setupTcInputBehavior(startS, 59, endH, startM);
+
+    setupTcInputBehavior(endH, 99, endM, startS);
+    setupTcInputBehavior(endM, 59, endS, endH);
+    setupTcInputBehavior(endS, 59, null, endM);
+
+    if (btnResetStart) {
+        btnResetStart.addEventListener('click', () => {
+            setTimecodeFromSeconds('start', 0);
+            updateTimecodeValues();
+            showDlToast("Waktu mulai di-reset ke 00:00:00", "success", 1500);
+        });
+    }
+
+    if (btnSetFullEnd) {
+        btnSetFullEnd.addEventListener('click', () => {
+            const targetSec = currentVideoDurationSec > 0 ? currentVideoDurationSec : 300;
+            setTimecodeFromSeconds('end', targetSec);
+            updateTimecodeValues();
+            showDlToast(currentVideoDurationSec > 0 ? "Waktu selesai di-set sesuai durasi video." : "Waktu selesai di-set ke 00:05:00", "success", 1500);
+        });
+    }
+
+    function nudgeEndTime(deltaSec) {
+        const curEnd = getTimecodeSeconds('end');
+        const startSec = getTimecodeSeconds('start');
+        let newEnd = curEnd + deltaSec;
+        if (newEnd <= startSec) newEnd = startSec + 1;
+        if (currentVideoDurationSec > 0 && newEnd > currentVideoDurationSec) {
+            newEnd = currentVideoDurationSec;
+        }
+        setTimecodeFromSeconds('end', newEnd);
+        updateTimecodeValues();
+    }
+
+    if (btnNudgeMinus10) btnNudgeMinus10.addEventListener('click', () => nudgeEndTime(-10));
+    if (btnNudgePlus10) btnNudgePlus10.addEventListener('click', () => nudgeEndTime(10));
+    if (btnNudgeMinus60) btnNudgeMinus60.addEventListener('click', () => nudgeEndTime(-60));
+    if (btnNudgePlus60) btnNudgePlus60.addEventListener('click', () => nudgeEndTime(60));
+
+    if (checkSegment) {
+        checkSegment.addEventListener('change', function () {
+            if (this.checked) {
+                if (segmentInputs) segmentInputs.style.display = 'flex';
+                if (tcHeaderHint) tcHeaderHint.style.display = 'inline';
+                const endSec = getTimecodeSeconds('end');
+                if (endSec <= 60 && currentVideoDurationSec > 0) {
+                    setTimecodeFromSeconds('end', currentVideoDurationSec);
+                }
+                updateTimecodeValues();
+            } else {
+                if (segmentInputs) segmentInputs.style.display = 'none';
+                if (tcHeaderHint) tcHeaderHint.style.display = 'none';
+            }
+        });
+    }
+
+    if (btnRefresh) {
+        btnRefresh.addEventListener('click', function () {
+            checkProjectStatus();
+            showDlToast("Status project diperbarui.", "success", 2000);
+        });
+    }
+
+    if (logToggle) {
+        logToggle.addEventListener('click', function (e) {
+            if (e.target === logClearBtn) {
+                if (logContent) logContent.textContent = '';
+                return;
+            }
+            if (!logContent) return;
+            if (logContent.style.display === 'block') {
+                logContent.style.display = 'none';
+                logToggle.querySelector('span').innerHTML = '&#9654; Log Aktivitas / Terminal';
+            } else {
+                logContent.style.display = 'block';
+                logToggle.querySelector('span').innerHTML = '&#9660; Log Aktivitas / Terminal';
+            }
+        });
+    }
+
+    function cleanTimestamp(val) {
+        if (!val) return "";
+        return val.trim().replace(/\s+/g, '');
+    }
+
+    function getStreamCodec(ffprobePath, filePath, streamType) {
+        if (!cp || !cp.spawnSync) return "";
+        try {
+            const res = cp.spawnSync(ffprobePath, [
+                "-v", "error",
+                "-select_streams", streamType,
+                "-show_entries", "stream=codec_name",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                filePath
+            ], { env: getEnv(), timeout: 10000 });
+            return res.stdout ? res.stdout.toString().trim().toLowerCase() : "";
+        } catch (e) {
+            return "";
+        }
+    }
+
+    function ensurePremiereCompatibility(filePath, ffmpegPath, ffprobePath, callback) {
+        const ext = path.extname ? path.extname(filePath).toLowerCase() : filePath.substring(filePath.lastIndexOf('.')).toLowerCase();
+
+        if (ext === '.mp3' || ext === '.wav') {
+            if (progressBar) progressBar.style.width = '100%';
+            if (progressPercent) progressPercent.textContent = '100%';
+            callback(filePath);
+            return;
+        }
+
+        const vCodec = getStreamCodec(ffprobePath, filePath, 'v:0');
+        const aCodec = getStreamCodec(ffprobePath, filePath, 'a:0');
+        appendLog(`Analisis Codec File: Video=[${vCodec || 'unknown'}], Audio=[${aCodec || 'unknown'}]`);
+
+        const isH264 = (vCodec === 'h264');
+        const isAAC = (aCodec === 'aac' || aCodec === '');
+
+        if (isH264 && isAAC && ext === '.mp4') {
+            appendLog("Format file sudah H.264 & AAC murni (100% Premiere Compatible).");
+            if (progressBar) progressBar.style.width = '96%';
+            if (progressPercent) progressPercent.textContent = '96%';
+            callback(filePath);
+            return;
+        }
+
+        if (progressPhase) progressPhase.textContent = 'Menyesuaikan format ke H.264 & AAC...';
+        if (progressBar) progressBar.style.width = '72%';
+        if (progressPercent) progressPercent.textContent = '72%';
+        if (progressSpeed) progressSpeed.textContent = 'FFmpeg Encoding...';
+        appendLog(`Codec [${vCodec}/${aCodec}] disesuaikan ke H.264/AAC agar terbaca di Premiere Pro.`);
+
+        const dir = path.dirname(filePath);
+        const base = path.basename ? path.basename(filePath, ext) : filePath.split('/').pop().replace(ext, '');
+        const tempOutput = path.join(dir, `${base}_pr_temp.mp4`);
+        const finalMp4 = path.join(dir, `${base}.mp4`);
+
+        const ffmpegArgs = ['-y', '-i', filePath];
+
+        if (!isH264) {
+            ffmpegArgs.push('-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p');
+        } else {
+            ffmpegArgs.push('-c:v', 'copy');
+        }
+
+        if (!isAAC && aCodec) {
+            ffmpegArgs.push('-c:a', 'aac', '-b:a', '192k');
+        } else {
+            ffmpegArgs.push('-c:a', 'copy');
+        }
+
+        ffmpegArgs.push('-movflags', '+faststart', tempOutput);
+
+        appendLog(`Menjalankan penyesuaian: ffmpeg ${ffmpegArgs.join(' ')}`);
+
+        const ffProc = cp.spawn(ffmpegPath, ffmpegArgs, { env: getEnv() });
+
+        ffProc.stderr.on('data', (d) => {
+            const str = d.toString();
+            const timeMatch = str.match(/time=(\d+):(\d+):(\d+\.\d+)/);
+            if (timeMatch && currentVideoDurationSec > 0) {
+                const currentSec = (+timeMatch[1]) * 3600 + (+timeMatch[2]) * 60 + (+timeMatch[3]);
+                const progressRatio = Math.min(1, currentSec / currentVideoDurationSec);
+                const combinedPct = 70 + Math.round(progressRatio * 25);
+                if (progressBar) progressBar.style.width = `${combinedPct}%`;
+                if (progressPercent) progressPercent.textContent = `${combinedPct}%`;
+                if (progressPhase) progressPhase.textContent = `Menyesuaikan H.264: ${Math.round(progressRatio * 100)}%`;
+            }
+        });
+
+        ffProc.on('close', (code) => {
+            if (code === 0 && fs.existsSync(tempOutput)) {
+                appendLog("Konversi codec ke H.264 & AAC berhasil!");
+                if (progressBar) progressBar.style.width = '96%';
+                if (progressPercent) progressPercent.textContent = '96%';
+                try {
+                    if (fs.existsSync(filePath)) {
+                        fs.unlinkSync(filePath);
+                    }
+                    if (fs.existsSync(finalMp4) && finalMp4 !== tempOutput) {
+                        fs.unlinkSync(finalMp4);
+                    }
+                    fs.renameSync(tempOutput, finalMp4);
+                    callback(finalMp4);
+                } catch (e) {
+                    appendLog(`Rename error: ${e.message}`);
+                    callback(tempOutput);
+                }
+            } else {
+                appendLog(`Penyesuaian FFmpeg selesai dengan code ${code}.`);
+                callback(filePath);
+            }
+        });
+
+        ffProc.on('error', (err) => {
+            appendLog(`FFmpeg error: ${err.message}`);
+            callback(filePath);
+        });
+    }
+
+    if (btnDownload) {
+        btnDownload.addEventListener('click', function () {
+            if (isDownloading) return;
+
+            const url = ytUrlInput ? ytUrlInput.value.trim() : "";
+            if (!url) {
+                showDlToast("Harap masukkan link media terlebih dahulu!", "error");
+                if (ytUrlInput) ytUrlInput.focus();
+                return;
+            }
+
+            if (!url.startsWith("http://") && !url.startsWith("https://")) {
+                showDlToast("URL tidak valid. Masukkan link yang lengkap (https://...).", "error");
+                return;
+            }
+
+            if (!isProjectValid || !currentTargetFolder) {
+                showDlToast("Project belum disimpan. Silakan simpan (Cmd+S / Ctrl+S) project Premiere Anda!", "error");
+                checkProjectStatus();
+                return;
+            }
+
+            const binName = (binNameInput && binNameInput.value.trim()) ? binNameInput.value.trim() : "YT Downloads";
+            const formatChoice = formatSelect ? formatSelect.value : 'best_video';
+            const useSegment = Boolean(checkSegment && checkSegment.checked);
+            if (useSegment) {
+                updateTimecodeValues();
+                const startSec = getTimecodeSeconds('start');
+                const endSec = getTimecodeSeconds('end');
+                if (endSec <= startSec) {
+                    showDlToast("Waktu Selesai (End) harus lebih besar dari waktu Mulai (Start)!", "error");
+                    return;
+                }
+            }
+            const startVal = cleanTimestamp(startTimeInput ? startTimeInput.value : "");
+            const endVal = cleanTimestamp(endTimeInput ? endTimeInput.value : "");
+
+            if (!cp || !cp.spawn) {
+                showDlToast("Node.js runtime belum aktif. Muat ulang panel di Premiere.", "error");
+                return;
+            }
+
+            startDownload({ url, formatChoice, useSegment, startVal, endVal, binName });
+        });
+    }
+
+    function startDownload({ url, formatChoice, useSegment, startVal, endVal, binName }) {
+        isDownloading = true;
+        if (btnDownload) btnDownload.disabled = true;
+        if (btnDownloadText) btnDownloadText.textContent = "Sedang Memproses...";
+        if (progressCard) progressCard.style.display = 'block';
+        if (progressBar) progressBar.style.width = '0%';
+        if (progressPercent) progressPercent.textContent = '0%';
+        if (progressPhase) progressPhase.textContent = 'Menghubungkan ke server media...';
+        if (progressSpeed) progressSpeed.textContent = '';
+        if (progressEta) progressEta.textContent = 'ETA: Menghitung...';
+
+        const { ytDlpPath, ffmpegPath, ffprobePath } = resolveDownloaderBinaries();
+        appendLog(`Menggunakan yt-dlp: ${ytDlpPath}`);
+        appendLog(`Target folder: ${currentTargetFolder}`);
+
+        const args = [
+            '--no-playlist',
+            '--newline',
+            '--print', 'after_move:filepath',
+            '--ffmpeg-location', ffmpegPath,
+            '--user-agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+            '-o', path.join(currentTargetFolder, '%(title)s [%(id)s].%(ext)s'),
+            url
+        ];
+
+        if (checkCookies && checkCookies.checked) {
+            args.splice(1, 0, '--cookies-from-browser', 'safari');
+        }
+
+        if (formatChoice === 'best_video') {
+            args.splice(1, 0, '-S', 'vcodec:h264,res,acodec:m4a');
+        } else if (formatChoice === 'mp3') {
+            args.splice(1, 0, '-x', '--audio-format', 'mp3', '--audio-quality', '0');
+        } else if (formatChoice === 'wav') {
+            args.splice(1, 0, '-x', '--audio-format', 'wav');
+        } else if (!isNaN(Number(formatChoice))) {
+            const h = Number(formatChoice);
+            args.splice(1, 0, '-S', `res:${h},vcodec:h264,acodec:m4a`);
+            appendLog(`Target resolusi: ${h}p (Prioritas: Codec H.264 & AAC)`);
+        } else {
+            args.splice(1, 0, '-S', 'vcodec:h264,res,acodec:m4a');
+        }
+
+        if (useSegment && startVal && endVal) {
+            const sectionArg = `*${startVal}-${endVal}`;
+            args.splice(1, 0, '--download-sections', sectionArg, '--force-keyframes-at-cuts');
+            appendLog(`Mengaktifkan potongan durasi: ${sectionArg}`);
+        }
+
+        appendLog(`Menjalankan perintah: ${ytDlpPath} ${args.join(' ')}`);
+
+        let downloadedFilePath = "";
+        const proc = cp.spawn(ytDlpPath, args, { env: getEnv() });
+
+        function handleChunkText(text) {
+            const lines = text.split(/[\r\n]+/);
+
+            for (let i = 0; i < lines.length; i++) {
+                const trimmed = lines[i].trim();
+                if (!trimmed) continue;
+
+                if (trimmed.startsWith('[download]') || trimmed.startsWith('[Merger]')) {
+                    appendLog(trimmed);
+                }
+
+                if (trimmed.startsWith('[download]') && trimmed.includes('%')) {
+                    const percentMatch = trimmed.match(/(\d+(?:\.\d+)?)%/);
+                    if (percentMatch) {
+                        const rawPct = parseFloat(percentMatch[1]);
+                        const mappedPct = Math.min(68, Math.round(rawPct * 0.68));
+                        if (progressBar) progressBar.style.width = `${mappedPct}%`;
+                        if (progressPercent) progressPercent.textContent = `${mappedPct}%`;
+                        if (progressPhase) progressPhase.textContent = useSegment ? `Mengunduh segmen (${rawPct.toFixed(0)}%)...` : `Mengunduh (${rawPct.toFixed(0)}%)...`;
+                    }
+
+                    const speedMatch = trimmed.match(/at\s+([0-9.]+\s*[a-zA-Z\/]+)/);
+                    if (speedMatch && progressSpeed) {
+                        progressSpeed.textContent = speedMatch[1];
+                    }
+
+                    const etaMatch = trimmed.match(/ETA\s+([0-9:]+)/);
+                    if (etaMatch && progressEta) {
+                        progressEta.textContent = `ETA: ${etaMatch[1]}`;
+                    }
+                } else if (trimmed.includes('[Merger]') || trimmed.includes('[ExtractAudio]')) {
+                    if (progressPhase) progressPhase.textContent = 'Menggabungkan aliran media...';
+                    if (progressBar) progressBar.style.width = '70%';
+                    if (progressPercent) progressPercent.textContent = '70%';
+                } else if (trimmed.startsWith('/') || trimmed.match(/^[A-Za-z]:\\/)) {
+                    downloadedFilePath = trimmed;
+                }
+            }
+        }
+
+        proc.stdout.on('data', (data) => {
+            handleChunkText(data.toString());
+        });
+
+        proc.stderr.on('data', (data) => {
+            handleChunkText(data.toString());
+        });
+
+        proc.on('close', (code) => {
+            if (code === 0) {
+                if (progressBar) progressBar.style.width = '70%';
+                if (progressPercent) progressPercent.textContent = '70%';
+                if (progressPhase) progressPhase.textContent = 'Memverifikasi kompatibilitas codec Premiere...';
+
+                if (!downloadedFilePath || (fs && fs.existsSync && !fs.existsSync(downloadedFilePath))) {
+                    downloadedFilePath = getLatestFileInFolder(currentTargetFolder);
+                }
+
+                if (downloadedFilePath) {
+                    appendLog(`Download selesai: ${downloadedFilePath}`);
+
+                    ensurePremiereCompatibility(downloadedFilePath, ffmpegPath, ffprobePath, (finalPath) => {
+                        if (progressBar) progressBar.style.width = '98%';
+                        if (progressPercent) progressPercent.textContent = '98%';
+                        if (progressPhase) progressPhase.textContent = 'Memasukkan ke Bin Premiere Pro...';
+                        if (progressSpeed) progressSpeed.textContent = '';
+                        if (progressEta) progressEta.textContent = 'Selesai';
+                        appendLog(`File final siap dimasukkan: ${finalPath}`);
+                        importToPremiereBin(finalPath, binName);
+                    });
+                } else {
+                    isDownloading = false;
+                    if (btnDownload) btnDownload.disabled = false;
+                    if (btnDownloadText) btnDownloadText.textContent = "Download & Masukkan ke Bin";
+                    showDlToast("Download selesai, namun path file tidak terdeteksi.", "error");
+                }
+            } else {
+                isDownloading = false;
+                if (btnDownload) btnDownload.disabled = false;
+                if (btnDownloadText) btnDownloadText.textContent = "Download & Masukkan ke Bin";
+                if (progressCard) progressCard.style.display = 'none';
+                showDlToast(`Gagal mendownload media (Exit code: ${code}). Cek log terminal.`, "error");
+            }
+        });
+
+        proc.on('error', (err) => {
+            isDownloading = false;
+            if (btnDownload) btnDownload.disabled = false;
+            if (btnDownloadText) btnDownloadText.textContent = "Download & Masukkan ke Bin";
+            if (progressCard) progressCard.style.display = 'none';
+            appendLog(`Process error: ${err.message}`);
+            showDlToast(`Gagal menjalankan downloader: ${err.message}`, "error");
+        });
+    }
+
+    function getLatestFileInFolder(dir) {
+        if (!fs || !fs.readdirSync) return "";
+        try {
+            const files = fs.readdirSync(dir);
+            let latestFile = "";
+            let latestMtime = 0;
+
+            for (const file of files) {
+                if (file.startsWith('.')) continue;
+                const fullPath = path.join(dir, file);
+                const stat = fs.statSync(fullPath);
+                if (stat.isFile() && stat.mtimeMs > latestMtime) {
+                    latestMtime = stat.mtimeMs;
+                    latestFile = fullPath;
+                }
+            }
+            return latestFile;
+        } catch (e) {
+            appendLog(`Error finding latest file: ${e.message}`);
+            return "";
+        }
+    }
+
+    function importToPremiereBin(filePath, binName) {
+        const scriptCall = `importFileToBin(${JSON.stringify(filePath)}, ${JSON.stringify(binName)})`;
+        appendLog(`Memanggil ExtendScript: ${scriptCall}`);
+
+        csInterface.evalScript(scriptCall, function (result) {
+            isDownloading = false;
+            if (btnDownload) btnDownload.disabled = false;
+            if (btnDownloadText) btnDownloadText.textContent = "Download & Masukkan ke Bin";
+
+            appendLog(`Hasil ExtendScript: ${result}`);
+            try {
+                const res = JSON.parse(result);
+                if (res.success) {
+                    if (progressBar) progressBar.style.width = '100%';
+                    if (progressPercent) progressPercent.textContent = '100%';
+                    if (progressPhase) progressPhase.textContent = `Selesai dimasukkan ke Bin: "${binName}"!`;
+                    showDlToast(`Berhasil! Video (H.264 & AAC) masuk ke Bin "${binName}".`, "success", 7000);
+                } else {
+                    showDlToast(`Gagal import ke Premiere: ${res.error || 'Unknown error'}`, "error");
+                }
+            } catch (e) {
+                showDlToast("Download berhasil! Silakan cek Bin di Premiere Pro.", "success");
+            }
+
+            setTimeout(() => {
+                if (!isDownloading && progressCard) {
+                    progressCard.style.display = 'none';
+                }
+            }, 4000);
+        });
+    }
+
     // ==========================================
     // INITIALIZATION
     // ==========================================
@@ -2189,11 +3360,16 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         // Initial search for premiere pro tutorials
         searchYouTube("premiere pro tutorial");
 
+        // Initialize Downloader status & timecodes
+        checkProjectStatus();
+        updateTimecodeValues();
+
         // Clipboard polling
         checkClipboard();
         setInterval(checkClipboard, 2500);
 
         window.addEventListener('focus', () => {
+            checkProjectStatus();
             checkClipboard();
         });
     });

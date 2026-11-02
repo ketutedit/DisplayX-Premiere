@@ -1265,6 +1265,705 @@ body.theater-mode .dx-clipboard-banner {
 }
 
 /* ==========================================================================
+   Mode Navigation Tabs (Player & Cari vs Downloader & Import Bin)
+   ========================================================================== */
+.dx-mode-tabs {
+    display: flex;
+    background: #14161c;
+    border-bottom: 1px solid var(--border-color);
+    padding: 4px 8px;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.dx-mode-tab {
+    flex: 1;
+    background: #1c1f28;
+    border: 1px solid #282c38;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 700;
+    padding: 6px 10px;
+    border-radius: 5px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+}
+
+.dx-mode-tab:hover {
+    background: #252936;
+    color: #e2e8f0;
+    border-color: #384054;
+}
+
+.dx-mode-tab.active {
+    background: linear-gradient(135deg, rgba(37, 99, 235, 0.25) 0%, rgba(29, 78, 216, 0.35) 100%);
+    border-color: #3b82f6;
+    color: #fff;
+    box-shadow: 0 2px 8px rgba(37, 99, 235, 0.2);
+}
+
+.dx-tab-pane {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    flex: 1;
+}
+
+body.theater-mode .dx-mode-tabs {
+    display: none !important;
+}
+
+body.theater-mode #panePlayer {
+    height: 100%;
+    flex: 1;
+}
+
+/* Clipboard Download Button */
+.dx-clipboard-dl-btn {
+    background: #2563eb;
+    color: #fff;
+    border: none;
+    font-size: 10.5px;
+    font-weight: 700;
+    padding: 3px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s ease;
+}
+
+.dx-clipboard-dl-btn:hover {
+    background: #3b82f6;
+}
+
+/* Now Playing Download Action Pill */
+.dx-action-pill.dx-pill-download {
+    background: rgba(37, 99, 235, 0.2);
+    border-color: rgba(59, 130, 246, 0.5);
+    color: #60a5fa;
+}
+
+.dx-action-pill.dx-pill-download:hover {
+    background: #2563eb;
+    border-color: #3b82f6;
+    color: #fff;
+}
+
+/* Quick Download Button on Search Result Cards */
+.dx-card-dl-btn {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    background: rgba(15, 23, 42, 0.88);
+    border: 1px solid rgba(59, 130, 246, 0.55);
+    color: #60a5fa;
+    border-radius: 4px;
+    padding: 3px 6px;
+    font-size: 10px;
+    font-weight: 700;
+    cursor: pointer;
+    z-index: 5;
+    opacity: 0;
+    transition: all 0.15s ease;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+}
+
+.dx-card:hover .dx-card-dl-btn {
+    opacity: 1;
+}
+
+.dx-card-dl-btn:hover {
+    background: #2563eb;
+    border-color: #60a5fa;
+    color: #fff;
+    transform: scale(1.05);
+}
+
+/* ==========================================================================
+   Tab 2: Multi-Platform Downloader & Premiere Pro Bin Importer Styles
+   ========================================================================== */
+.downloader-container {
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.downloader-container .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 7px;
+    padding: 10px;
+    margin-bottom: 8px;
+}
+
+.project-status {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.status-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.status-indicator {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 600;
+}
+
+.dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: #facc15;
+    display: inline-block;
+}
+
+.dot.connected {
+    background-color: #30d158;
+    box-shadow: 0 0 6px rgba(48, 209, 88, 0.4);
+}
+
+.dot.disconnected {
+    background-color: #ff453a;
+}
+
+.refresh-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 11.5px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    transition: all 0.15s ease;
+}
+
+.refresh-btn:hover {
+    color: #fff;
+    background: #2b303e;
+}
+
+.path-preview {
+    font-size: 10.5px;
+    color: var(--text-muted);
+    word-break: break-all;
+    background: var(--bg-input);
+    padding: 6px 8px;
+    border-radius: 5px;
+    border: 1px solid var(--border-color);
+}
+
+.path-preview span {
+    color: #60a5fa;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.form-group {
+    margin-bottom: 10px;
+}
+
+.form-label-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 4px;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.form-label {
+    display: block;
+    font-weight: 700;
+    color: #cbd5e1;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+
+.platform-badge {
+    font-size: 10px;
+    color: #8bb8e8;
+    background: #182635;
+    padding: 1px 6px;
+    border-radius: 4px;
+    border: 1px solid #233b52;
+}
+
+.input-with-button {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+.input-with-button .input-text {
+    flex: 1;
+    min-width: 0;
+}
+
+.btn-analyze {
+    background: #253342;
+    border: 1px solid #36506c;
+    color: #8fc2ff;
+    padding: 7px 10px;
+    border-radius: 5px;
+    font-weight: 600;
+    font-size: 11px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+    transition: all 0.15s ease;
+    flex-shrink: 0;
+}
+
+.btn-analyze:hover {
+    background: #32475e;
+    border-color: #517ca8;
+    color: #fff;
+}
+
+.btn-analyze:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.downloader-container .input-text,
+.downloader-container select {
+    width: 100%;
+    background-color: var(--bg-input);
+    border: 1px solid var(--border-color);
+    color: #fff;
+    padding: 7px 10px;
+    border-radius: 5px;
+    outline: none;
+    user-select: text;
+    -webkit-user-select: text;
+    font-size: 11.5px;
+    font-family: inherit;
+    transition: border-color 0.15s ease;
+}
+
+.downloader-container .input-text:focus,
+.downloader-container select:focus {
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 0 1px var(--accent-blue);
+}
+
+.video-info-box {
+    display: none;
+    background: #181b22;
+    border: 1px solid #2d3342;
+    border-radius: 6px;
+    padding: 8px;
+    margin-bottom: 10px;
+    align-items: center;
+    gap: 10px;
+}
+
+.video-thumb {
+    width: 88px;
+    height: 52px;
+    object-fit: cover;
+    border-radius: 4px;
+    background: #0e1015;
+    flex-shrink: 0;
+    border: 1px solid #2d3342;
+}
+
+.video-details {
+    flex: 1;
+    min-width: 0;
+}
+
+.video-title {
+    font-size: 11.5px;
+    font-weight: 600;
+    color: #fff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-bottom: 5px;
+}
+
+.video-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.meta-badge {
+    font-size: 10px;
+    background: #252936;
+    color: #cbd5e1;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.res-badge {
+    background: var(--accent-blue);
+    color: #fff;
+    font-weight: 700;
+}
+
+.detect-status {
+    font-size: 10px;
+    color: #7ab7ff;
+}
+
+/* Segment Cutter Box & Timecode Controls */
+.segment-box {
+    background: #161d26;
+    border: 1px solid #233b57;
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-bottom: 10px;
+}
+
+.segment-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.tc-header-hint {
+    font-size: 9.5px;
+    color: #6e8fae;
+    font-style: italic;
+}
+
+.checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    font-weight: 600;
+    color: #7ab7ff;
+}
+
+.checkbox-label input[type="checkbox"] {
+    accent-color: var(--accent-blue);
+    width: 14px;
+    height: 14px;
+    cursor: pointer;
+}
+
+.segment-controls {
+    margin-top: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.tc-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    background: #10151d;
+    border: 1px solid #1c2b3d;
+    border-radius: 5px;
+    padding: 6px 8px;
+    gap: 6px;
+}
+
+.tc-label {
+    font-size: 11px;
+    font-weight: 700;
+    color: #9bbcd9;
+    min-width: 72px;
+}
+
+.tc-boxes {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+}
+
+.tc-unit {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.tc-input {
+    width: 36px;
+    height: 28px;
+    background: #0b0f14;
+    border: 1px solid #283d54;
+    border-radius: 4px;
+    color: #ffffff;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 13px;
+    font-weight: 700;
+    text-align: center;
+    padding: 0;
+    outline: none;
+    user-select: text;
+    -webkit-user-select: text;
+    -moz-appearance: textfield;
+    transition: all 0.15s ease;
+}
+
+.tc-input::-webkit-outer-spin-button,
+.tc-input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.tc-input:focus {
+    border-color: var(--accent-blue);
+    background: #081524;
+    box-shadow: 0 0 0 1px var(--accent-blue);
+    color: #fff;
+}
+
+.tc-colon {
+    font-size: 13px;
+    font-weight: 700;
+    color: #55799e;
+    margin: 0 1px 10px;
+}
+
+.tc-unit-name {
+    font-size: 7.5px;
+    font-weight: 700;
+    color: #5d758c;
+    letter-spacing: 0.4px;
+    margin-top: 2px;
+}
+
+.tc-quick-btn {
+    background: #1d2c3e;
+    border: 1px solid #2a415d;
+    color: #95bde6;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 4px 7px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s ease;
+}
+
+.tc-quick-btn:hover {
+    background: #273b54;
+    color: #fff;
+    border-color: #3b5b82;
+}
+
+.tc-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 2px;
+}
+
+.tc-badge {
+    background: rgba(37, 99, 235, 0.14);
+    border: 1px solid rgba(59, 130, 246, 0.35);
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 10.5px;
+    color: #8ac0ff;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.tc-badge strong {
+    color: #38bdf8;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-weight: 700;
+}
+
+.tc-badge.error {
+    background: rgba(255, 69, 58, 0.15);
+    border-color: rgba(255, 69, 58, 0.45);
+    color: #ff6b61;
+}
+
+.tc-badge.error strong {
+    color: #ff857d;
+}
+
+.tc-nudges {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+
+.nudge-label {
+    font-size: 9.5px;
+    color: #677e94;
+    font-weight: 600;
+    margin-right: 2px;
+}
+
+.nudge-btn {
+    background: #19232f;
+    border: 1px solid #25394d;
+    color: #8eb3db;
+    border-radius: 3px;
+    font-size: 9.5px;
+    font-weight: 700;
+    padding: 3px 6px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.nudge-btn:hover {
+    background: #243547;
+    color: #fff;
+    border-color: #38587a;
+}
+
+.downloader-container .btn-primary {
+    width: 100%;
+    background-color: var(--accent-blue);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 10px;
+    font-weight: 700;
+    font-size: 12.5px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    transition: background 0.15s ease, transform 0.05s ease;
+    margin-top: 6px;
+}
+
+.downloader-container .btn-primary:hover:not(:disabled) {
+    background-color: #1d4ed8;
+}
+
+.downloader-container .btn-primary:disabled {
+    background-color: #2b303c;
+    color: #64748b;
+    cursor: not-allowed;
+}
+
+.progress-card {
+    display: none;
+    background: #14221a;
+    border: 1px solid #234b35;
+    border-radius: 6px;
+    padding: 10px;
+    margin-top: 10px;
+}
+
+.progress-header {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    font-weight: 600;
+    margin-bottom: 6px;
+    color: #7cd992;
+}
+
+.progress-track {
+    width: 100%;
+    height: 7px;
+    background: #0e1913;
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 6px;
+}
+
+.progress-bar {
+    width: 0%;
+    height: 100%;
+    background: linear-gradient(90deg, #22c55e 0%, #4ade80 100%);
+    transition: width 0.15s ease;
+}
+
+.progress-details {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    color: #92bfa0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.log-accordion {
+    margin-top: 10px;
+}
+
+.log-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 10.5px;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 4px 0;
+}
+
+.log-header:hover {
+    color: #e2e8f0;
+}
+
+.log-content {
+    display: none;
+    background: #0d0f13;
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    padding: 8px;
+    height: 110px;
+    overflow-y: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10px;
+    color: #8cbb92;
+    white-space: pre-wrap;
+    user-select: text;
+    -webkit-user-select: text;
+    margin-top: 4px;
+}
+
+.toast {
+    margin-top: 8px;
+    padding: 8px 10px;
+    border-radius: 5px;
+    font-size: 11px;
+    display: none;
+}
+
+.toast.success {
+    background: rgba(48, 209, 88, 0.15);
+    border: 1px solid rgba(48, 209, 88, 0.4);
+    color: #4ade80;
+}
+
+.toast.error {
+    background: rgba(255, 59, 48, 0.15);
+    border: 1px solid rgba(255, 59, 48, 0.4);
+    color: #f87171;
+}
+
+/* ==========================================================================
    Responsive Adaptations for Premiere Pro Panels (Wide, Narrow & Compact)
    ========================================================================== */
 
@@ -1279,6 +1978,15 @@ body.theater-mode .dx-clipboard-banner {
     .dx-badge {
         font-size: 8.5px;
         padding: 1px 4px;
+    }
+    .dx-mode-tabs {
+        padding: 4px 6px;
+        gap: 4px;
+    }
+    .dx-mode-tab {
+        padding: 5px 6px;
+        font-size: 10.5px;
+        gap: 4px;
     }
     .dx-now-playing-bar {
         padding: 6px 10px;
@@ -1319,6 +2027,14 @@ body.theater-mode .dx-clipboard-banner {
         grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
         gap: 8px;
     }
+    .downloader-container {
+        padding: 8px;
+    }
+    .tc-input {
+        width: 32px;
+        height: 26px;
+        font-size: 12px;
+    }
 }
 
 /* Very Narrow / Split Screen Mode (<= 360px) */
@@ -1336,6 +2052,10 @@ body.theater-mode .dx-clipboard-banner {
         width: 24px;
         height: 24px;
         font-size: 11px;
+    }
+    .dx-mode-tab {
+        font-size: 10px;
+        padding: 5px 4px;
     }
     .dx-now-playing-bar {
         padding: 6px 8px;
