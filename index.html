@@ -21,172 +21,211 @@
         </div>
     </header>
 
-    <!-- Clipboard Auto-Detect Banner -->
-    <div class="dx-clipboard-banner" id="clipboardBanner" style="display: none;">
-        <span>&#128203;</span>
-        <span class="dx-clipboard-text" id="clipboardText">Link video terdeteksi dari clipboard</span>
-        <button class="dx-clipboard-play-btn" id="btnPlayClipboard">&#9658; Putar</button>
-        <button class="dx-clipboard-close" id="btnCloseClipboard">&times;</button>
-    </div>
-
-    <!-- Persistent YouTube Player Stage (16:9) -->
-    <div class="dx-player-stage" id="playerStage">
-        <!-- Direct Native HTML5 Video Player + Synchronized Opus Audio (Zero-Disk WebM VP9 + Opus Stream) -->
-        <video id="nativePlayer" class="dx-player-frame" controls playsinline autoplay style="display: none;"></video>
-        <audio id="nativeAudio" preload="auto" style="display: none;"></audio>
-
-        <!-- On-Screen Display Badge (Frame Step & Shortcuts) -->
-        <div class="dx-player-osd" id="playerOsd" style="display: none;"></div>
-
-        <!-- Loading Spinner Overlay -->
-        <div class="dx-player-loading" id="playerLoading" style="display: none;">
-            <div class="dx-spinner"></div>
-            <div class="dx-loading-text" id="playerLoadingText">Memuat Video...</div>
+    <!-- Main Scrollable Container (Media player + controls + feed scroll naturally together like YouTube) -->
+    <div class="dx-main-scroll" id="mainScroll">
+        <!-- Clipboard Auto-Detect Banner -->
+        <div class="dx-clipboard-banner" id="clipboardBanner" style="display: none;">
+            <span>&#128203;</span>
+            <span class="dx-clipboard-text" id="clipboardText">Link video terdeteksi dari clipboard</span>
+            <button class="dx-clipboard-play-btn" id="btnPlayClipboard">&#9658; Putar</button>
+            <button class="dx-clipboard-close" id="btnCloseClipboard">&times;</button>
         </div>
 
-        <!-- Placeholder when no video is playing yet -->
-        <div class="dx-player-placeholder" id="playerPlaceholder">
-            <div class="dx-placeholder-icon">&#9658;</div>
-            <div class="dx-placeholder-title">Ardane YT Player</div>
-            <div class="dx-placeholder-desc">Paste link YouTube di bawah atau cari tutorial untuk mulai streaming.</div>
-        </div>
-    </div>
+        <!-- Persistent YouTube Player Stage (16:9) -->
+        <div class="dx-player-stage" id="playerStage">
+            <!-- Direct Native HTML5 Video Player + Synchronized Opus Audio (Zero-Disk WebM VP9 + Opus Stream) -->
+            <video id="nativePlayer" class="dx-player-frame" controls playsinline autoplay style="display: none;"></video>
+            <audio id="nativeAudio" preload="auto" style="display: none;"></audio>
 
-    <!-- Custom Interactive Timeline & In/Out Looping Scrubber -->
-    <div class="dx-timeline-bar" id="timelineBar" style="display: none;">
-        <div class="dx-timeline-track" id="timelineTrack" title="Klik untuk melompat ke waktu">
-            <div class="dx-timeline-progress" id="timelineProgress"></div>
-            <div class="dx-timeline-loop-region" id="timelineLoopRegion" style="display: none;"></div>
-            <div class="dx-marker-in" id="timelineMarkerIn" style="display: none;" title="Titik In (Awal Loop)"></div>
-            <div class="dx-marker-out" id="timelineMarkerOut" style="display: none;" title="Titik Out (Akhir Loop)"></div>
-            <div class="dx-timeline-playhead" id="timelinePlayhead"></div>
-        </div>
-    </div>
+            <!-- On-Screen Display Badge (Frame Step & Shortcuts) -->
+            <div class="dx-player-osd" id="playerOsd" style="display: none;"></div>
 
-    <!-- Now Playing Info Bar -->
-    <div class="dx-now-playing-bar" id="nowPlayingBar" style="display: none;">
-        <div class="dx-now-playing-info">
-            <div class="dx-now-playing-title" id="nowPlayingTitle">-</div>
-            <div class="dx-now-playing-meta">
-                <span class="dx-now-playing-channel" id="nowPlayingChannel">-</span>
-                <span id="nowPlayingDuration">0:00</span>
-                <span class="dx-loop-range-badge" id="loopRangeBadge" style="display: none;">🔁 In-Out: 0:00 - 0:00</span>
-            </div>
-        </div>
-        <div class="dx-now-playing-actions">
-            <!-- Frame-by-Frame Navigation Buttons -->
-            <button class="dx-action-pill" id="btnStepBack" title="Mundur 1 Frame (Keyboard: ,)">⏮️ Frame</button>
-            <button class="dx-action-pill" id="btnStepForward" title="Maju 1 Frame (Keyboard: .)">Frame ⏭️</button>
-
-            <!-- In / Out Looping Controls (Premiere Pro NLE Style) -->
-            <button class="dx-action-pill" id="btnMarkIn" title="Tandai Titik In (Keyboard: I)">[ In</button>
-            <button class="dx-action-pill" id="btnMarkOut" title="Tandai Titik Out (Keyboard: O)">Out ]</button>
-            <button class="dx-action-pill" id="btnClearInOut" title="Hapus Titik In/Out (Keyboard: X atau Opt+X)" style="display: none;">✕ Clear</button>
-            <button class="dx-action-pill active" id="btnToggleLoop" title="Toggle Looping Ulang (Keyboard: L)">🔁 Loop</button>
-
-            <!-- Audio Mute/Unmute & Volume Slider -->
-            <button class="dx-action-pill audio-active" id="btnAudioToggle" title="Audio On / Mute (Keyboard: M)">🔊 Audio</button>
-            <div class="dx-volume-wrap" title="Pengaturan Volume">
-                <input type="range" id="volumeSlider" class="dx-volume-slider" min="0" max="100" value="85" title="Volume">
+            <!-- Loading Spinner Overlay -->
+            <div class="dx-player-loading" id="playerLoading" style="display: none;">
+                <div class="dx-spinner"></div>
+                <div class="dx-loading-text" id="playerLoadingText">Memuat Video...</div>
             </div>
 
-            <!-- Quality Settings Dropdown -->
-            <div class="dx-dropdown-wrap">
-                <button class="dx-action-pill" id="btnQuality" title="Pengaturan Kualitas Video">⚙️ <span id="currentQualityLabel">Auto</span></button>
-                <div class="dx-dropdown-menu" id="qualityMenu" style="display: none;">
-                    <div class="dx-dropdown-item active" data-quality="auto">✨ Auto (Resolusi Terbaik)</div>
-                    <div class="dx-dropdown-item" data-quality="2160">📺 4K UHD (2160p)</div>
-                    <div class="dx-dropdown-item" data-quality="1440">📺 2K QHD (1440p)</div>
-                    <div class="dx-dropdown-item" data-quality="1080">📺 1080p Full HD</div>
-                    <div class="dx-dropdown-item" data-quality="720">📺 720p HD</div>
-                    <div class="dx-dropdown-item" data-quality="480">480p</div>
-                    <div class="dx-dropdown-item" data-quality="360">360p (Hemat Data)</div>
+            <!-- Placeholder when no video is playing yet -->
+            <div class="dx-player-placeholder" id="playerPlaceholder">
+                <div class="dx-placeholder-icon">&#9658;</div>
+                <div class="dx-placeholder-title">Ardane YT Player</div>
+                <div class="dx-placeholder-desc">Paste link YouTube di bawah atau cari tutorial untuk mulai streaming.</div>
+            </div>
+        </div>
+
+        <!-- Custom Interactive Timeline & In/Out Looping Scrubber -->
+        <div class="dx-timeline-bar" id="timelineBar" style="display: none;">
+            <div class="dx-timeline-track" id="timelineTrack" title="Klik untuk melompat ke waktu">
+                <div class="dx-timeline-progress" id="timelineProgress"></div>
+                <div class="dx-timeline-loop-region" id="timelineLoopRegion" style="display: none;"></div>
+                <div class="dx-marker-in" id="timelineMarkerIn" style="display: none;" title="Titik In (Awal Loop)"></div>
+                <div class="dx-marker-out" id="timelineMarkerOut" style="display: none;" title="Titik Out (Akhir Loop)"></div>
+                <div class="dx-timeline-playhead" id="timelinePlayhead"></div>
+            </div>
+        </div>
+
+        <!-- Now Playing Bar (Responsive Header + Organized Toolbar) -->
+        <div class="dx-now-playing-bar" id="nowPlayingBar" style="display: none;">
+            <!-- Top Metadata Block -->
+            <div class="dx-np-header">
+                <div class="dx-now-playing-title" id="nowPlayingTitle">-</div>
+                <div class="dx-now-playing-meta">
+                    <span class="dx-now-playing-channel" id="nowPlayingChannel">-</span>
+                    <span class="dx-np-dot">•</span>
+                    <span id="nowPlayingDuration" class="dx-now-playing-dur">0:00</span>
+                    <span class="dx-loop-range-badge" id="loopRangeBadge" style="display: none;">🔁 In-Out: 0:00 - 0:00</span>
                 </div>
             </div>
 
-            <!-- Playback Speed Dropdown -->
-            <div class="dx-dropdown-wrap">
-                <button class="dx-action-pill" id="btnSpeed" title="Kecepatan Putar (Playback Speed)">⚡ <span id="currentSpeedLabel">1x</span></button>
-                <div class="dx-dropdown-menu" id="speedMenu" style="display: none;">
-                    <div class="dx-dropdown-item" data-speed="0.25">0.25x (Super Slow)</div>
-                    <div class="dx-dropdown-item" data-speed="0.5">0.5x (Slow Motion)</div>
-                    <div class="dx-dropdown-item" data-speed="0.75">0.75x</div>
-                    <div class="dx-dropdown-item active" data-speed="1">1x (Normal)</div>
-                    <div class="dx-dropdown-item" data-speed="1.25">1.25x</div>
-                    <div class="dx-dropdown-item" data-speed="1.5">1.5x</div>
-                    <div class="dx-dropdown-item" data-speed="2">2x (Cepat)</div>
+            <!-- Responsive Actions Toolbar with Logical Groupings -->
+            <div class="dx-now-playing-actions">
+                <!-- Group 1: Frame Navigation & Looping NLE Controls -->
+                <div class="dx-action-group">
+                    <button class="dx-action-pill" id="btnStepBack" title="Mundur 1 Frame (Keyboard: ,)">
+                        <span class="dx-pill-icon">⏮</span><span class="dx-pill-label-opt">Frame</span>
+                    </button>
+                    <button class="dx-action-pill" id="btnStepForward" title="Maju 1 Frame (Keyboard: .)">
+                        <span class="dx-pill-label-opt">Frame</span><span class="dx-pill-icon">⏭</span>
+                    </button>
+                    <button class="dx-action-pill" id="btnMarkIn" title="Tandai Titik In (Keyboard: I)">
+                        <span class="dx-pill-icon">[</span> In
+                    </button>
+                    <button class="dx-action-pill" id="btnMarkOut" title="Tandai Titik Out (Keyboard: O)">
+                        Out <span class="dx-pill-icon">]</span>
+                    </button>
+                    <button class="dx-action-pill" id="btnClearInOut" title="Hapus Titik In/Out (Keyboard: X)" style="display: none;">
+                        <span class="dx-pill-icon">✕</span><span class="dx-pill-label-opt">Clear</span>
+                    </button>
+                    <button class="dx-action-pill active" id="btnToggleLoop" title="Toggle Looping Ulang (Keyboard: L)">
+                        <span class="dx-pill-icon">🔁</span><span class="dx-pill-label-opt">Loop</span>
+                    </button>
+                </div>
+
+                <!-- Group 2: Audio & Volume -->
+                <div class="dx-action-group">
+                    <button class="dx-action-pill audio-active" id="btnAudioToggle" title="Audio On / Mute (Keyboard: M)">
+                        <span class="dx-pill-icon">🔊</span><span class="dx-pill-label-opt">Audio</span>
+                    </button>
+                    <div class="dx-volume-wrap" title="Pengaturan Volume">
+                        <input type="range" id="volumeSlider" class="dx-volume-slider" min="0" max="100" value="85" title="Volume">
+                    </div>
+                </div>
+
+                <!-- Group 3: Quality & Playback Speed -->
+                <div class="dx-action-group">
+                    <!-- Quality Settings Dropdown -->
+                    <div class="dx-dropdown-wrap">
+                        <button class="dx-action-pill" id="btnQuality" title="Pengaturan Kualitas Video">
+                            <span class="dx-pill-icon">⚙️</span><span id="currentQualityLabel">Auto</span>
+                        </button>
+                        <div class="dx-dropdown-menu" id="qualityMenu" style="display: none;">
+                            <div class="dx-dropdown-item active" data-quality="auto">✨ Auto (Resolusi Terbaik)</div>
+                            <div class="dx-dropdown-item" data-quality="2160">📺 4K UHD (2160p)</div>
+                            <div class="dx-dropdown-item" data-quality="1440">📺 2K QHD (1440p)</div>
+                            <div class="dx-dropdown-item" data-quality="1080">📺 1080p Full HD</div>
+                            <div class="dx-dropdown-item" data-quality="720">📺 720p HD</div>
+                            <div class="dx-dropdown-item" data-quality="480">480p</div>
+                            <div class="dx-dropdown-item" data-quality="360">360p (Hemat Data)</div>
+                        </div>
+                    </div>
+
+                    <!-- Playback Speed Dropdown -->
+                    <div class="dx-dropdown-wrap">
+                        <button class="dx-action-pill" id="btnSpeed" title="Kecepatan Putar (Playback Speed)">
+                            <span class="dx-pill-icon">⚡</span><span id="currentSpeedLabel">1x</span>
+                        </button>
+                        <div class="dx-dropdown-menu" id="speedMenu" style="display: none;">
+                            <div class="dx-dropdown-item" data-speed="0.25">0.25x (Super Slow)</div>
+                            <div class="dx-dropdown-item" data-speed="0.5">0.5x (Slow Motion)</div>
+                            <div class="dx-dropdown-item" data-speed="0.75">0.75x</div>
+                            <div class="dx-dropdown-item active" data-speed="1">1x (Normal)</div>
+                            <div class="dx-dropdown-item" data-speed="1.25">1.25x</div>
+                            <div class="dx-dropdown-item" data-speed="1.5">1.5x</div>
+                            <div class="dx-dropdown-item" data-speed="2">2x (Cepat)</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Group 4: Bookmark, Copy & Open -->
+                <div class="dx-action-group">
+                    <button class="dx-action-pill" id="btnBookmark" title="Simpan ke Favorit">
+                        <span id="bookmarkIcon">&#9734;</span><span class="dx-pill-label-opt">Favorit</span>
+                    </button>
+                    <button class="dx-action-pill" id="btnCopyLink" title="Salin URL YouTube">
+                        <span class="dx-pill-icon">&#128203;</span><span class="dx-pill-label-opt">Salin</span>
+                    </button>
+                    <button class="dx-action-pill" id="btnOpenNowPlaying" title="Buka di Browser Asli (Safari/Chrome)">
+                        <span class="dx-pill-icon">&#8599;</span><span class="dx-pill-label-opt">Buka</span>
+                    </button>
                 </div>
             </div>
-
-            <button class="dx-action-pill" id="btnBookmark" title="Simpan ke Favorit">
-                <span id="bookmarkIcon">&#9734;</span> Favorit
-            </button>
-            <button class="dx-action-pill" id="btnCopyLink" title="Salin URL YouTube">&#128203; Salin</button>
-            <button class="dx-action-pill" id="btnOpenNowPlaying" title="Buka di Browser Asli (Safari/Chrome)">&#8599; Buka</button>
-        </div>
-    </div>
-
-    <!-- Scrollable Body / Feed Area -->
-    <div class="dx-body-content">
-        <!-- Box 1: Dedicated Direct YouTube URL / Paste Stream Box -->
-        <div class="dx-card-box dx-link-card">
-            <div class="dx-box-header">
-                <span class="dx-box-title">🔗 Putar Lewat Link YouTube (Paste URL)</span>
-                <span class="dx-box-tag">⚡ 0 MB Disk (RAM Stream)</span>
-            </div>
-            <div class="dx-input-row">
-                <span class="dx-input-icon">🔗</span>
-                <input type="text" id="urlInput" class="dx-box-input" 
-                       placeholder="Paste link YouTube di sini (contoh: https://youtu.be/...)..." 
-                       autocomplete="off" spellcheck="false">
-                <button type="button" class="dx-btn-clear" id="btnClearUrl" style="display: none;">&times;</button>
-                <button type="button" class="dx-btn-action dx-btn-primary" id="btnStreamUrl" title="Putar video dari link yang dimasukkan">▶ Putar</button>
-                <button type="button" class="dx-btn-action dx-btn-paste" id="btnPasteClipboardDirect" title="Ambil link dari clipboard & putar langsung">📋 Paste & Putar</button>
-            </div>
         </div>
 
-        <!-- Box 2: Dedicated Search YouTube Tutorials & Videos -->
-        <div class="dx-card-box dx-search-card">
-            <div class="dx-box-header">
-                <span class="dx-box-title">🔍 Cari Video & Referensi YouTube</span>
-            </div>
-            <div class="dx-search-wrap">
+        <!-- Scrollable Feed Area -->
+        <div class="dx-body-content">
+            <!-- Box 1: Dedicated Direct YouTube URL / Paste Stream Box -->
+            <div class="dx-card-box dx-link-card">
+                <div class="dx-box-header">
+                    <span class="dx-box-title">🔗 Putar Lewat Link YouTube (Paste URL)</span>
+                    <span class="dx-box-tag">⚡ 0 MB Disk (RAM Stream)</span>
+                </div>
                 <div class="dx-input-row">
-                    <span class="dx-input-icon">🔍</span>
-                    <input type="text" id="searchInput" class="dx-box-input" 
-                           placeholder="Ketik kata kunci (contoh: premiere pro tutorial, after effects, sfx)..." 
+                    <span class="dx-input-icon">🔗</span>
+                    <input type="text" id="urlInput" class="dx-box-input" 
+                           placeholder="Paste link YouTube di sini (contoh: https://youtu.be/...)..." 
                            autocomplete="off" spellcheck="false">
-                    <button type="button" class="dx-btn-clear" id="btnClearSearch" style="display: none;">&times;</button>
-                    <button type="button" class="dx-btn-action dx-btn-primary" id="btnSearch">Cari</button>
+                    <button type="button" class="dx-btn-clear" id="btnClearUrl" style="display: none;">&times;</button>
+                    <button type="button" class="dx-btn-action dx-btn-primary" id="btnStreamUrl" title="Putar video dari link yang dimasukkan">▶ Putar</button>
+                    <button type="button" class="dx-btn-action dx-btn-paste" id="btnPasteClipboardDirect" title="Ambil link dari clipboard & putar langsung">
+                        <span>📋</span><span class="dx-btn-label-opt"> Paste & Putar</span>
+                    </button>
                 </div>
-                <!-- Auto-complete Suggestions Dropdown -->
-                <div class="dx-suggestions-list" id="suggestionsList"></div>
             </div>
-        </div>
 
-        <!-- Quick Categories (Fred Pelle Style) -->
-        <div class="dx-pills-row">
-            <button class="dx-pill active" data-query="premiere pro tutorial">🎓 Premiere</button>
-            <button class="dx-pill" data-query="lofi hip hop radio live">☕ Lo-Fi Beats</button>
-            <button class="dx-pill" data-query="motion graphics inspiration">🎬 Inspirasi</button>
-            <button class="dx-pill" data-query="after effects vfx tutorial">⚡ VFX</button>
-            <button class="dx-pill" data-query="cinematic sound effects">🔊 SFX</button>
-            <button class="dx-pill" data-mode="favorites">⭐ Favorit</button>
-            <button class="dx-pill" data-mode="history">🕒 Riwayat</button>
-        </div>
-
-        <!-- Section Heading & View Switcher -->
-        <div class="dx-section-header">
-            <span id="sectionTitle">Video Rekomendasi</span>
-            <div class="dx-view-toggles">
-                <button class="dx-view-btn active" id="btnViewGrid" title="Tampilan Grid">&#9638;</button>
-                <button class="dx-view-btn" id="btnViewList" title="Tampilan Baris">&#9776;</button>
+            <!-- Box 2: Dedicated Search YouTube Tutorials & Videos -->
+            <div class="dx-card-box dx-search-card">
+                <div class="dx-box-header">
+                    <span class="dx-box-title">🔍 Cari Video & Referensi YouTube</span>
+                </div>
+                <div class="dx-search-wrap">
+                    <div class="dx-input-row">
+                        <span class="dx-input-icon">🔍</span>
+                        <input type="text" id="searchInput" class="dx-box-input" 
+                               placeholder="Ketik kata kunci (contoh: premiere pro tutorial, after effects, sfx)..." 
+                               autocomplete="off" spellcheck="false">
+                        <button type="button" class="dx-btn-clear" id="btnClearSearch" style="display: none;">&times;</button>
+                        <button type="button" class="dx-btn-action dx-btn-primary" id="btnSearch">Cari</button>
+                    </div>
+                    <!-- Auto-complete Suggestions Dropdown -->
+                    <div class="dx-suggestions-list" id="suggestionsList"></div>
+                </div>
             </div>
-        </div>
 
-        <!-- Video Results Grid -->
-        <div class="dx-video-grid" id="videoGrid">
-            <!-- Populated dynamically via JS -->
+            <!-- Quick Categories (Fred Pelle Style) -->
+            <div class="dx-pills-row">
+                <button class="dx-pill active" data-query="premiere pro tutorial">🎓 Premiere</button>
+                <button class="dx-pill" data-query="lofi hip hop radio live">☕ Lo-Fi Beats</button>
+                <button class="dx-pill" data-query="motion graphics inspiration">🎬 Inspirasi</button>
+                <button class="dx-pill" data-query="after effects vfx tutorial">⚡ VFX</button>
+                <button class="dx-pill" data-query="cinematic sound effects">🔊 SFX</button>
+                <button class="dx-pill" data-mode="favorites">⭐ Favorit</button>
+                <button class="dx-pill" data-mode="history">🕒 Riwayat</button>
+            </div>
+
+            <!-- Section Heading & View Switcher -->
+            <div class="dx-section-header">
+                <span id="sectionTitle">Video Rekomendasi</span>
+                <div class="dx-view-toggles">
+                    <button class="dx-view-btn active" id="btnViewGrid" title="Tampilan Grid">&#9638;</button>
+                    <button class="dx-view-btn" id="btnViewList" title="Tampilan Baris">&#9776;</button>
+                </div>
+            </div>
+
+            <!-- Video Results Grid -->
+            <div class="dx-video-grid" id="videoGrid">
+                <!-- Populated dynamically via JS -->
+            </div>
         </div>
     </div>
 

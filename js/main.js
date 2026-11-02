@@ -771,7 +771,13 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
             nowPlayingTitle.title = title;
         }
         if (nowPlayingChannel) nowPlayingChannel.textContent = channel || 'YouTube Creator';
-        if (nowPlayingDuration) nowPlayingDuration.textContent = duration ? `• ${duration}` : '';
+        if (nowPlayingDuration) nowPlayingDuration.textContent = duration || '0:00';
+
+        // Auto-scroll to top to bring video player into full view (like YouTube)
+        const mainScroll = document.getElementById('mainScroll');
+        if (mainScroll && mainScroll.scrollTop > 60) {
+            mainScroll.scrollTo({ top: 0, behavior: 'smooth' });
+        }
 
         updateBookmarkButtonState();
         saveToHistory(currentVideo);
