@@ -129,12 +129,17 @@
     }
 
     // In-Memory Stream Registry & 6MB Range Chunking Proxy (Zero-Disk Storage Architecture)
-    const streamRegistry = {};
+    // Shared on globalThis so panel reloads never split the streamRegistry from an active HTTP server
+    const rootGlobal = typeof globalThis !== 'undefined' ? globalThis : (typeof global !== 'undefined' ? global : window);
+    if (!rootGlobal.__ardaneStreamRegistry) {
+        rootGlobal.__ardaneStreamRegistry = {};
+    }
+    const streamRegistry = rootGlobal.__ardaneStreamRegistry;
     const MAX_RAM_CHUNK = 6 * 1024 * 1024; // 6MB in RAM to prevent YouTube speed throttling
 
-    function forwardRangeRequest(entry, clientReq, clientRes, redirectCount = 0) {
+    function forwardRangeRequest(entry, clientReq, clientRes, redirectCount = 0, retryCount = 0) {
         if (redirectCount > 5) {
-            clientRes.writeHead(502);
+            if (!clientRes.headersSent) clientRes.writeHead(502);
             return clientRes.end("Too many redirects");
         }
 
@@ -143,7 +148,7 @@
         try {
             parsedTarget = new URL(targetUrl);
         } catch (e) {
-            clientRes.writeHead(400);
+            if (!clientRes.headersSent) clientRes.writeHead(400);
             return clientRes.end("Invalid target URL");
         }
 
@@ -156,7 +161,7 @@
             "User-Agent": (entry.headers && entry.headers["User-Agent"]) ||
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "*/*",
-            "Connection": "keep-alive"
+            "Connection": "close"
         };
 
         const incomingRange = clientReq.headers["range"];
@@ -182,14 +187,33 @@
             port: parsedTarget.port || (parsedTarget.protocol === "http:" ? 80 : 443),
             path: parsedTarget.pathname + parsedTarget.search,
             method: "GET",
-            headers: reqHeaders
+            headers: reqHeaders,
+            agent: false,
+            timeout: 12000
         };
+
+        let isClientClosed = false;
+        clientReq.on("close", () => {
+            isClientClosed = true;
+            try { upstreamReq.destroy(); } catch (e) {}
+        });
 
         const upstreamReq = requestLib.request(options, (upstreamRes) => {
             if (upstreamRes.statusCode >= 300 && upstreamRes.statusCode < 400 && upstreamRes.headers.location) {
                 upstreamRes.resume();
                 entry.currentUrl = upstreamRes.headers.location;
-                return forwardRangeRequest(entry, clientReq, clientRes, redirectCount + 1);
+                return forwardRangeRequest(entry, clientReq, clientRes, redirectCount + 1, retryCount);
+            }
+
+            // If a redirected edge URL returned 403/5xx, fallback to original entry.url and retry
+            if ((upstreamRes.statusCode >= 500 || (upstreamRes.statusCode === 403 && entry.currentUrl)) && retryCount < 2 && !isClientClosed) {
+                upstreamRes.resume();
+                entry.currentUrl = null;
+                return setTimeout(() => {
+                    if (!isClientClosed && !clientRes.headersSent) {
+                        forwardRangeRequest(entry, clientReq, clientRes, 0, retryCount + 1);
+                    }
+                }, 120);
             }
 
             const resHeaders = {
@@ -205,65 +229,77 @@
                 resHeaders["Content-Length"] = upstreamRes.headers["content-length"];
             }
 
-            clientRes.writeHead(upstreamRes.statusCode || 200, resHeaders);
+            if (!clientRes.headersSent) {
+                clientRes.writeHead(upstreamRes.statusCode || 200, resHeaders);
+            }
             upstreamRes.pipe(clientRes);
+        });
 
-            clientReq.on("close", () => {
-                try { upstreamReq.destroy(); } catch (e) {}
-            });
+        upstreamReq.on("timeout", () => {
+            upstreamReq.destroy(new Error("Upstream request timeout"));
         });
 
         upstreamReq.on("error", (err) => {
+            if (isClientClosed) return;
+            if (!clientRes.headersSent && retryCount < 2) {
+                entry.currentUrl = null;
+                return setTimeout(() => {
+                    if (!isClientClosed && !clientRes.headersSent) {
+                        forwardRangeRequest(entry, clientReq, clientRes, 0, retryCount + 1);
+                    }
+                }, 150);
+            }
             if (!clientRes.headersSent) {
                 clientRes.writeHead(502);
             }
-            clientRes.end();
+            try { clientRes.end(); } catch (e) {}
         });
 
         upstreamReq.end();
     }
 
     function startLocalPlayerServer() {
-        if (playerServer || !http) return;
-        try {
-            playerServer = http.createServer(async (req, res) => {
-                let parsed;
-                try {
-                    parsed = new URL(req.url, `http://127.0.0.1:${PLAYER_PORT}`);
-                } catch (e) {
-                    res.writeHead(400);
-                    return res.end();
+        if (!http) return;
+
+        // Always update the live request handler on rootGlobal so existing server instances use the latest code & registry
+        rootGlobal.__ardaneRequestHandler = async (req, res) => {
+            let parsed;
+            try {
+                parsed = new URL(req.url, `http://127.0.0.1:${PLAYER_PORT}`);
+            } catch (e) {
+                res.writeHead(400);
+                return res.end();
+            }
+
+            if (parsed.pathname === '/health') {
+                res.writeHead(200, {
+                    'Content-Type': 'application/json; charset=utf-8',
+                    'Cache-Control': 'no-store',
+                    'Access-Control-Allow-Origin': '*'
+                });
+                return res.end(JSON.stringify({
+                    status: 'ok',
+                    service: 'Ardane YT Player Service (Pro Stream Engine Active)',
+                    version: '2.0.0',
+                    port: PLAYER_PORT
+                }));
+            }
+
+            if (parsed.pathname === '/player') {
+                const vidId = parsed.searchParams.get('v') || '';
+                const isLoop = parsed.searchParams.get('loop') === '1';
+                const embedDomain = parsed.searchParams.get('host') === 'nocookie'
+                    ? 'www.youtube-nocookie.com'
+                    : 'www.youtube.com';
+
+                if (!/^[a-zA-Z0-9_-]{11}$/.test(vidId)) {
+                    res.writeHead(400, { 'Content-Type': 'text/plain' });
+                    return res.end('Invalid YouTube video id');
                 }
 
-                if (parsed.pathname === '/health') {
-                    res.writeHead(200, {
-                        'Content-Type': 'application/json; charset=utf-8',
-                        'Cache-Control': 'no-store',
-                        'Access-Control-Allow-Origin': '*'
-                    });
-                    return res.end(JSON.stringify({
-                        status: 'ok',
-                        service: 'Ardane YT Player Service (Pro Stream Engine Active)',
-                        version: '2.0.0',
-                        port: PLAYER_PORT
-                    }));
-                }
-
-                if (parsed.pathname === '/player') {
-                    const vidId = parsed.searchParams.get('v') || '';
-                    const isLoop = parsed.searchParams.get('loop') === '1';
-                    const embedDomain = parsed.searchParams.get('host') === 'nocookie'
-                        ? 'www.youtube-nocookie.com'
-                        : 'www.youtube.com';
-
-                    if (!/^[a-zA-Z0-9_-]{11}$/.test(vidId)) {
-                        res.writeHead(400, { 'Content-Type': 'text/plain' });
-                        return res.end('Invalid YouTube video id');
-                    }
-
-                    const loopParams = isLoop ? `&loop=1&playlist=${vidId}` : '';
-                    const embedUrl = `https://${embedDomain}/embed/${vidId}?autoplay=1&playsinline=1&controls=1&rel=0&modestbranding=1${loopParams}`;
-                    const playerHtml = `<!doctype html>
+                const loopParams = isLoop ? `&loop=1&playlist=${vidId}` : '';
+                const embedUrl = `https://${embedDomain}/embed/${vidId}?autoplay=1&playsinline=1&controls=1&rel=0&modestbranding=1${loopParams}`;
+                const playerHtml = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -287,80 +323,97 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 </body>
 </html>`;
 
-                    res.writeHead(200, {
-                        'Content-Type': 'text/html; charset=utf-8',
-                        'Cache-Control': 'no-store',
-                        'Referrer-Policy': 'origin',
-                        'X-Content-Type-Options': 'nosniff'
-                    });
-                    return res.end(playerHtml);
+                res.writeHead(200, {
+                    'Content-Type': 'text/html; charset=utf-8',
+                    'Cache-Control': 'no-store',
+                    'Referrer-Policy': 'origin',
+                    'X-Content-Type-Options': 'nosniff'
+                });
+                return res.end(playerHtml);
+            }
+
+            if (parsed.pathname === '/stream') {
+                // RefTube Pro In-Memory Stream Key (Direct WebM VP9 Video / Opus Audio in RAM)
+                const key = parsed.searchParams.get('key');
+                const activeRegistry = rootGlobal.__ardaneStreamRegistry || streamRegistry;
+                if (key && activeRegistry[key]) {
+                    return forwardRangeRequest(activeRegistry[key], req, res, 0, 0);
                 }
 
-                if (parsed.pathname === '/stream') {
-                    // RefTube Pro In-Memory Stream Key (Direct WebM VP9 Video / Opus Audio in RAM)
-                    const key = parsed.searchParams.get('key');
-                    if (key && streamRegistry[key]) {
-                        return forwardRangeRequest(streamRegistry[key], req, res, 0);
-                    }
-
-                    // Fallback to direct video id
-                    const vidId = parsed.searchParams.get('v') || '';
-                    const quality = parsed.searchParams.get('q') || 'auto';
-                    if (!/^[a-zA-Z0-9_-]{11}$/.test(vidId)) {
-                        res.writeHead(400, { 'Content-Type': 'text/plain' });
-                        return res.end('Invalid YouTube video id or stream key');
-                    }
-                    try {
-                        const directUrl = await resolveStreamUrl(vidId, quality);
-                        const target = new URL(directUrl);
-                        const reqHeaders = {
-                            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                            'Accept': '*/*'
+                // Fallback to direct video id
+                const vidId = parsed.searchParams.get('v') || '';
+                const quality = parsed.searchParams.get('q') || 'auto';
+                if (!/^[a-zA-Z0-9_-]{11}$/.test(vidId)) {
+                    res.writeHead(400, { 'Content-Type': 'text/plain' });
+                    return res.end('Invalid YouTube video id or stream key');
+                }
+                try {
+                    const directUrl = await resolveStreamUrl(vidId, quality);
+                    const target = new URL(directUrl);
+                    const reqHeaders = {
+                        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Accept': '*/*'
+                    };
+                    if (req.headers.range) reqHeaders['Range'] = req.headers.range;
+                    const upstream = https.request({
+                        hostname: target.hostname,
+                        path: target.pathname + target.search,
+                        method: 'GET',
+                        headers: reqHeaders
+                    }, (upRes) => {
+                        const outHeaders = {
+                            'Content-Type': upRes.headers['content-type'] || 'video/mp4',
+                            'Accept-Ranges': 'bytes',
+                            'Access-Control-Allow-Origin': '*'
                         };
-                        if (req.headers.range) reqHeaders['Range'] = req.headers.range;
-                        const upstream = https.request({
-                            hostname: target.hostname,
-                            path: target.pathname + target.search,
-                            method: 'GET',
-                            headers: reqHeaders
-                        }, (upRes) => {
-                            const outHeaders = {
-                                'Content-Type': upRes.headers['content-type'] || 'video/mp4',
-                                'Accept-Ranges': 'bytes',
-                                'Access-Control-Allow-Origin': '*'
-                            };
-                            if (upRes.headers['content-range']) outHeaders['Content-Range'] = upRes.headers['content-range'];
-                            if (upRes.headers['content-length']) outHeaders['Content-Length'] = upRes.headers['content-length'];
-                            res.writeHead(upRes.statusCode, outHeaders);
-                            upRes.pipe(res);
-                        });
-                        upstream.on('error', (err) => {
-                            if (!res.headersSent) res.writeHead(502);
-                            res.end('Upstream stream error: ' + err.message);
-                        });
-                        req.on('close', () => { try { upstream.destroy(); } catch (e) {} });
-                        upstream.end();
-                    } catch (err) {
-                        res.writeHead(500, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
-                        res.end('Stream error: ' + err.message);
-                    }
-                    return;
+                        if (upRes.headers['content-range']) outHeaders['Content-Range'] = upRes.headers['content-range'];
+                        if (upRes.headers['content-length']) outHeaders['Content-Length'] = upRes.headers['content-length'];
+                        res.writeHead(upRes.statusCode, outHeaders);
+                        upRes.pipe(res);
+                    });
+                    upstream.on('error', (err) => {
+                        if (!res.headersSent) res.writeHead(502);
+                        res.end('Upstream stream error: ' + err.message);
+                    });
+                    req.on('close', () => { try { upstream.destroy(); } catch (e) {} });
+                    upstream.end();
+                } catch (err) {
+                    res.writeHead(500, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
+                    res.end('Stream error: ' + err.message);
                 }
+                return;
+            }
 
-                if (parsed.pathname === '/thumb') {
-                    const vidId = parsed.searchParams.get('v') || '';
-                    if (!/^[a-zA-Z0-9_-]{11}$/.test(vidId)) {
-                        res.writeHead(400, { 'Content-Type': 'text/plain' });
-                        return res.end('Invalid YouTube video id');
-                    }
-                    return serveThumbnail(vidId, res);
+            if (parsed.pathname === '/thumb') {
+                const vidId = parsed.searchParams.get('v') || '';
+                if (!/^[a-zA-Z0-9_-]{11}$/.test(vidId)) {
+                    res.writeHead(400, { 'Content-Type': 'text/plain' });
+                    return res.end('Invalid YouTube video id');
                 }
+                return serveThumbnail(vidId, res);
+            }
 
-                res.writeHead(200, { 'Content-Type': 'text/plain' });
-                res.end('Ardane YT Player Service Active');
+            res.writeHead(200, { 'Content-Type': 'text/plain' });
+            res.end('Ardane YT Player Service Active');
+        };
+
+        if (rootGlobal.__ardanePlayerServer && rootGlobal.__ardanePlayerServer.listening) {
+            playerServer = rootGlobal.__ardanePlayerServer;
+            return;
+        }
+
+        if (playerServer) return;
+        try {
+            playerServer = http.createServer((req, res) => {
+                if (typeof rootGlobal.__ardaneRequestHandler === 'function') {
+                    return rootGlobal.__ardaneRequestHandler(req, res);
+                }
+                res.writeHead(503);
+                res.end();
             });
 
             playerServer.listen(PLAYER_PORT, '127.0.0.1', () => {
+                rootGlobal.__ardanePlayerServer = playerServer;
                 console.log(`Ardane YT Player Server running on port ${PLAYER_PORT}`);
             });
 
@@ -377,12 +430,6 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     }
 
     startLocalPlayerServer();
-
-    window.addEventListener('beforeunload', () => {
-        if (playerServer) {
-            try { playerServer.close(); } catch (e) {}
-        }
-    });
 
     // DOM Elements
     const playerStage = document.getElementById('playerStage');
@@ -820,13 +867,26 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         loadInProStreamEngine(id, currentQuality);
     }
 
-    function loadInProStreamEngine(videoId, targetQuality = currentQuality, seekTime = null) {
+    let activeStreamLoadToken = 0;
+
+    function loadInProStreamEngine(videoId, targetQuality = currentQuality, seekTime = null, isAutoRefetch = false) {
         if (!videoId || !nativePlayer) return;
 
+        const requestToken = ++activeStreamLoadToken;
         playerMode = 'pro';
         currentQuality = targetQuality;
 
         nativePlayer.style.display = 'block';
+
+        // Immediately detach previous handlers & pause old media so no false error fires during yt-dlp scan
+        nativePlayer.onerror = null;
+        nativePlayer.onplaying = null;
+        nativePlayer.oncanplay = null;
+        nativePlayer.onloadedmetadata = null;
+        try { nativePlayer.pause(); } catch (e) {}
+        if (nativeAudio) {
+            try { nativeAudio.pause(); } catch (e) {}
+        }
 
         if (activeYtDlpProc) {
             try { activeYtDlpProc.kill(); } catch (e) {}
@@ -834,15 +894,16 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         }
 
         // 1. Instant cache check
-        if (videoMetadataCache.has(videoId)) {
+        if (!isAutoRefetch && videoMetadataCache.has(videoId)) {
             const cached = videoMetadataCache.get(videoId);
-            if (Date.now() - cached.timestamp < 30 * 60 * 1000) {
-                selectAndPlayStreamResolution(videoId, cached, targetQuality, seekTime);
+            if (Date.now() - cached.timestamp < 25 * 60 * 1000) {
+                showPlayerLoading('Memuat stream video...');
+                selectAndPlayStreamResolution(videoId, cached, targetQuality, seekTime, 0, 0, false);
                 return;
             }
         }
 
-        showPlayerLoading('Menghubungkan stream video Pro (1080p–4K)...');
+        showPlayerLoading(isAutoRefetch ? 'Menyegarkan tautan stream video...' : 'Menghubungkan stream video Pro (1080p–4K)...');
 
         const ytDlp = resolveYtDlp();
         const args = ['--no-playlist', '--no-warnings', '-J', `https://www.youtube.com/watch?v=${videoId}`];
@@ -855,7 +916,12 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         proc.stdout.on('data', chunk => stdoutChunks.push(chunk));
 
         proc.on('close', code => {
-            activeYtDlpProc = null;
+            if (activeYtDlpProc === proc) {
+                activeYtDlpProc = null;
+            }
+            // Ignore if user already clicked another video
+            if (requestToken !== activeStreamLoadToken) return;
+
             if (code !== 0 || stdoutChunks.length === 0) {
                 console.warn('yt-dlp JSON scan failed');
                 showPlayerError('Gagal mengambil data video YouTube. Coba refresh atau pilih video lain.');
@@ -922,7 +988,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                 };
 
                 videoMetadataCache.set(videoId, metadata);
-                selectAndPlayStreamResolution(videoId, metadata, targetQuality, seekTime);
+                selectAndPlayStreamResolution(videoId, metadata, targetQuality, seekTime, 0, 0, isAutoRefetch);
 
             } catch (err) {
                 console.error('Error parsing yt-dlp metadata:', err);
@@ -931,41 +997,65 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         });
     }
 
-    function selectAndPlayStreamResolution(videoId, metadata, targetQuality = 'auto', preserveTimeSec = null) {
+    function selectAndPlayStreamResolution(
+        videoId,
+        metadata,
+        targetQuality = 'auto',
+        preserveTimeSec = null,
+        candidateIndex = 0,
+        retryAttempt = 0,
+        hasRefetchedMeta = false
+    ) {
         if (!metadata || !metadata.webmVideos || metadata.webmVideos.length === 0) {
             showPlayerError('Stream video tidak tersedia untuk resolusi ini.');
             return;
         }
 
+        startLocalPlayerServer();
+        const loadToken = ++activeStreamLoadToken;
+
         const maxH = targetQuality === 'auto' ? Infinity : parseInt(targetQuality, 10);
         let candidates = metadata.webmVideos.filter(f => (f.height || 0) <= maxH);
         if (candidates.length === 0) candidates = metadata.webmVideos;
 
-        const chosenVideo = candidates[0];
+        const safeIndex = Math.min(candidateIndex, candidates.length - 1);
+        const chosenVideo = candidates[safeIndex];
         const bestAudio = metadata.opusAudios && metadata.opusAudios.length > 0 ? metadata.opusAudios[0] : null;
 
         currentVideoFps = chosenVideo.fps || metadata.fps || 30;
 
+        const activeRegistry = (typeof rootGlobal !== 'undefined' && rootGlobal.__ardaneStreamRegistry)
+            ? rootGlobal.__ardaneStreamRegistry
+            : streamRegistry;
+
         const vKey = `video_${videoId}_${chosenVideo.format_id || chosenVideo.height}`;
-        streamRegistry[vKey] = {
+        const existingVEntry = activeRegistry[vKey];
+        activeRegistry[vKey] = {
             url: chosenVideo.url,
+            currentUrl: (retryAttempt === 0 && existingVEntry && existingVEntry.url === chosenVideo.url) ? existingVEntry.currentUrl : null,
             headers: chosenVideo.http_headers || {},
             filesize: chosenVideo.filesize || chosenVideo.filesize_approx || 0,
             mimeType: 'video/webm'
         };
+        streamRegistry[vKey] = activeRegistry[vKey];
 
-        const vStreamUrl = `http://127.0.0.1:${PLAYER_PORT}/stream?key=${encodeURIComponent(vKey)}`;
+        const cacheBust = retryAttempt > 0 ? `&r=${retryAttempt}&t=${Date.now()}` : '';
+        const vStreamUrl = `http://127.0.0.1:${PLAYER_PORT}/stream?key=${encodeURIComponent(vKey)}${cacheBust}`;
 
         if (bestAudio && bestAudio.url) {
             const aKey = `audio_${videoId}_${bestAudio.format_id || 'opus'}`;
-            streamRegistry[aKey] = {
+            const existingAEntry = activeRegistry[aKey];
+            activeRegistry[aKey] = {
                 url: bestAudio.url,
+                currentUrl: (retryAttempt === 0 && existingAEntry && existingAEntry.url === bestAudio.url) ? existingAEntry.currentUrl : null,
                 headers: bestAudio.http_headers || {},
                 filesize: bestAudio.filesize || bestAudio.filesize_approx || 0,
                 mimeType: 'audio/webm'
             };
-            const aStreamUrl = `http://127.0.0.1:${PLAYER_PORT}/stream?key=${encodeURIComponent(aKey)}`;
-            if (nativeAudio && nativeAudio.src !== aStreamUrl) {
+            streamRegistry[aKey] = activeRegistry[aKey];
+
+            const aStreamUrl = `http://127.0.0.1:${PLAYER_PORT}/stream?key=${encodeURIComponent(aKey)}${cacheBust}`;
+            if (nativeAudio && (nativeAudio.src !== aStreamUrl || retryAttempt > 0)) {
                 nativeAudio.src = aStreamUrl;
                 nativeAudio.load();
             }
@@ -983,43 +1073,101 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         try { nativePlayer.pause(); } catch (e) {}
 
         let pendingSeek = (preserveTimeSec !== null && preserveTimeSec > 0) ? preserveTimeSec : null;
+        let hasStartedPlayback = false;
 
-        nativePlayer.onloadedmetadata = () => {
+        const triggerSafePlay = () => {
+            if (loadToken !== activeStreamLoadToken) return;
             hidePlayerLoading();
-            if (pendingSeek !== null) {
-                try {
-                    nativePlayer.currentTime = pendingSeek;
-                    if (nativeAudio && hasSeparateAudio) nativeAudio.currentTime = pendingSeek;
-                } catch (e) {}
-                pendingSeek = null;
+            if (!hasStartedPlayback) {
+                hasStartedPlayback = true;
+                if (pendingSeek !== null) {
+                    try {
+                        nativePlayer.currentTime = pendingSeek;
+                        if (nativeAudio && hasSeparateAudio) nativeAudio.currentTime = pendingSeek;
+                    } catch (e) {}
+                    pendingSeek = null;
+                }
+                try { nativePlayer.playbackRate = currentSpeed; } catch (e) {}
+                applyAudioSettings();
+                updateLoopUI();
+                const p = nativePlayer.play();
+                if (p) p.catch(() => {});
+                syncAudioWithVideo(true);
             }
-            try { nativePlayer.playbackRate = currentSpeed; } catch (e) {}
-            applyAudioSettings();
-            updateLoopUI();
-            syncAudioWithVideo(true);
-            const p = nativePlayer.play();
-            if (p) p.catch(() => {});
         };
+
+        nativePlayer.onloadedmetadata = triggerSafePlay;
+        nativePlayer.oncanplay = triggerSafePlay;
 
         nativePlayer.onplaying = () => {
+            if (loadToken !== activeStreamLoadToken) return;
             hidePlayerLoading();
             syncAudioWithVideo(true);
         };
 
-        nativePlayer.oncanplay = () => hidePlayerLoading();
-
-        nativePlayer.onerror = (e) => {
-            hidePlayerLoading();
+        nativePlayer.onerror = () => {
+            if (loadToken !== activeStreamLoadToken) return;
             const err = nativePlayer.error;
             if (err && err.code === 1) return; // Routine abort ignored
-            console.warn('Native player error:', err);
+
+            const currentPlayTime = (nativePlayer && nativePlayer.currentTime > 0)
+                ? nativePlayer.currentTime
+                : preserveTimeSec;
+
+            // Automatic Self-Healing Stage 1: Re-trigger stream connection (up to 2 automatic retries)
+            if (retryAttempt < 2) {
+                console.log(`[Ardane Stream] Auto-retry ${retryAttempt + 1}/2 for ${videoId} (${chosenVideo.height}p)...`);
+                showPlayerLoading('Menyiapkan ulang aliran stream...');
+                setTimeout(() => {
+                    if (loadToken !== activeStreamLoadToken) return;
+                    selectAndPlayStreamResolution(
+                        videoId,
+                        metadata,
+                        targetQuality,
+                        currentPlayTime,
+                        safeIndex,
+                        retryAttempt + 1,
+                        hasRefetchedMeta
+                    );
+                }, 320);
+                return;
+            }
+
+            // Automatic Self-Healing Stage 2: Step down to next available WebM resolution (e.g. 1440p -> 1080p -> 720p)
+            if (safeIndex + 1 < candidates.length) {
+                const nextVideo = candidates[safeIndex + 1];
+                console.log(`[Ardane Stream] Stepping down resolution from ${chosenVideo.height}p to ${nextVideo.height}p...`);
+                showPlayerLoading(`Menyesuaikan resolusi stream (${nextVideo.height}p)...`);
+                setTimeout(() => {
+                    if (loadToken !== activeStreamLoadToken) return;
+                    selectAndPlayStreamResolution(
+                        videoId,
+                        metadata,
+                        targetQuality,
+                        currentPlayTime,
+                        safeIndex + 1,
+                        0,
+                        hasRefetchedMeta
+                    );
+                }, 250);
+                return;
+            }
+
+            // Automatic Self-Healing Stage 3: Re-fetch fresh yt-dlp metadata if cached URL expired
+            if (!hasRefetchedMeta) {
+                console.log(`[Ardane Stream] Refreshing yt-dlp stream URLs for ${videoId}...`);
+                videoMetadataCache.delete(videoId);
+                loadInProStreamEngine(videoId, targetQuality, currentPlayTime, true);
+                return;
+            }
+
+            hidePlayerLoading();
+            console.warn('Native player error after all retries:', err);
             showPlayerError('Pemutar video mengalami kendala stream. Coba ganti resolusi atau pilih video lain.');
         };
 
         nativePlayer.src = vStreamUrl;
         nativePlayer.load();
-        const p = nativePlayer.play();
-        if (p) p.catch(() => {});
 
         // Update UI Label
         const actualResLabel = `${chosenVideo.height}p`;
@@ -1030,7 +1178,9 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
             item.classList.toggle('active', item.getAttribute('data-quality') === targetQuality);
         });
 
-        showOsd(`📺 ${actualResLabel} WebM • ${Math.round(currentVideoFps)}fps`);
+        if (retryAttempt === 0) {
+            showOsd(`📺 ${actualResLabel} WebM • ${Math.round(currentVideoFps)}fps`);
+        }
     }
 
     function changeQuality(newQuality, label) {
