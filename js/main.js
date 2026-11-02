@@ -7,12 +7,45 @@
 (function () {
     'use strict';
 
+    // Safe path helper fallback
+    const fallbackPath = {
+        dirname: function (p) {
+            if (!p) return "";
+            const clean = String(p).replace(/\\/g, '/');
+            const idx = clean.lastIndexOf('/');
+            return idx !== -1 ? clean.substring(0, idx) : clean;
+        },
+        join: function () {
+            const parts = Array.prototype.slice.call(arguments);
+            return parts.filter(Boolean).join('/').replace(/[\/\\]+/g, '/');
+        },
+        basename: function (p, ext) {
+            if (!p) return "";
+            const clean = String(p).replace(/\\/g, '/');
+            const idx = clean.lastIndexOf('/');
+            let name = idx !== -1 ? clean.substring(idx + 1) : clean;
+            if (ext && name.endsWith(ext)) {
+                name = name.slice(0, -ext.length);
+            }
+            return name;
+        },
+        extname: function (p) {
+            if (!p) return "";
+            const clean = String(p).replace(/\\/g, '/');
+            const idx = clean.lastIndexOf('/');
+            const filename = idx !== -1 ? clean.substring(idx + 1) : clean;
+            const dotIdx = filename.lastIndexOf('.');
+            return dotIdx !== -1 ? filename.substring(dotIdx) : "";
+        }
+    };
+
     // Locate Node.js modules in Adobe CEP
     const nodeRequire = (typeof require !== 'undefined' ? require : null) ||
                         (window.require ? window.require : null) ||
                         (window.cep_node && window.cep_node.require ? window.cep_node.require : null);
 
     let fs = null;
+    let path = fallbackPath;
     let cp = null;
     let https = null;
     let http = null;
@@ -20,11 +53,12 @@
     if (nodeRequire) {
         try {
             fs = nodeRequire('fs');
+            path = nodeRequire('path') || fallbackPath;
             cp = nodeRequire('child_process');
             https = nodeRequire('https');
             http = nodeRequire('http');
         } catch (e) {
-            console.warn("DisplayX: Node.js modules not fully loaded", e);
+            console.warn("Ardane YT Player: Node.js modules not fully loaded", e);
         }
     }
 
@@ -2403,7 +2437,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     }
 
     function resolveDownloaderBinaries() {
-        const ytDlpPath = getYtDlpPath();
+        const ytDlpPath = resolveYtDlp();
         let ffmpegPath = '/opt/homebrew/bin/ffmpeg';
         if (fs && fs.existsSync && !fs.existsSync(ffmpegPath)) {
             if (fs.existsSync('/usr/local/bin/ffmpeg')) {
@@ -2424,6 +2458,85 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
         return { ytDlpPath, ffmpegPath, ffprobePath };
     }
+
+    // Ensure ExtendScript functions are always up-to-date in Premiere Pro even on simple HTML Reload
+    const HOST_EXTENDSCRIPT_CODE = `
+        function escapeJSONString(str) {
+            if (!str) return '""';
+            return '"' + String(str).replace(/\\\\/g, '\\\\\\\\')
+                            .replace(/"/g, '\\\\"')
+                            .replace(/\\n/g, '\\\\n')
+                            .replace(/\\r/g, '\\\\r')
+                            .replace(/\\t/g, '\\\\t') + '"';
+        }
+        function getProjectInfo() {
+            try {
+                if (!app || !app.project) {
+                    return '{"hasProject":false,"isSaved":false,"projectPath":"","projectName":""}';
+                }
+                var proj = app.project;
+                var pPath = proj.path ? String(proj.path) : "";
+                var pName = proj.name ? String(proj.name) : "";
+                var isSaved = (pPath !== null && pPath !== "" && pPath.length > 0);
+                return '{"hasProject":true,"isSaved":' + (isSaved ? 'true' : 'false') +
+                       ',"projectPath":' + escapeJSONString(pPath) +
+                       ',"projectName":' + escapeJSONString(pName) + '}';
+            } catch (err) {
+                return '{"hasProject":false,"error":' + escapeJSONString(err.toString()) + '}';
+            }
+        }
+        function getOrCreateBin(binName) {
+            if (!binName) binName = "YT Downloads";
+            var root = app.project.rootItem;
+            if (!root) return null;
+            for (var i = 0; i < root.children.numItems; i++) {
+                var child = root.children[i];
+                if (child && child.name === binName && (child.type === ProjectItemType.BIN || child.type === 2)) {
+                    return child;
+                }
+            }
+            try {
+                return root.createBin(binName);
+            } catch (e) {
+                return root;
+            }
+        }
+        function importFileToBin(filePath, binName) {
+            try {
+                if (!app || !app.project) {
+                    return '{"success":false,"error":"Tidak ada project Premiere Pro yang terbuka."}';
+                }
+                if (!filePath) {
+                    return '{"success":false,"error":"File path kosong."}';
+                }
+                var fileObj = new File(filePath);
+                if (!fileObj.exists) {
+                    return '{"success":false,"error":"File fisik tidak ditemukan di: " + filePath}';
+                }
+                var targetBin = getOrCreateBin(binName || "YT Downloads");
+                var fileArray = [fileObj.fsName];
+                var beforeCount = targetBin && targetBin.children ? targetBin.children.numItems : 0;
+                app.project.importFiles(fileArray, true, targetBin, false);
+                if (targetBin && targetBin !== app.project.rootItem) {
+                    var afterCount = targetBin.children ? targetBin.children.numItems : 0;
+                    if (afterCount === beforeCount) {
+                        var root = app.project.rootItem;
+                        var fileNameOnly = fileObj.name;
+                        for (var j = root.children.numItems - 1; j >= 0; j--) {
+                            var item = root.children[j];
+                            if (item && item.name === fileNameOnly) {
+                                item.moveProjectItem(targetBin);
+                                break;
+                            }
+                        }
+                    }
+                }
+                return '{"success":true,"message":"File berhasil di-import ke bin","binName":' + escapeJSONString(binName || "YT Downloads") + ',"filePath":' + escapeJSONString(fileObj.fsName) + '}';
+            } catch (err) {
+                return '{"success":false,"error":' + escapeJSONString(err.toString()) + '}';
+            }
+        }
+    `;
 
     function appendLog(message) {
         console.log(message);
@@ -2448,7 +2561,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
     function checkProjectStatus() {
         if (!statusDot || !statusText) return;
-        csInterface.evalScript('getProjectInfo()', function (result) {
+        csInterface.evalScript(HOST_EXTENDSCRIPT_CODE + '\ngetProjectInfo();', function (result) {
             try {
                 if (!result || result === 'EvalScript error.') {
                     statusDot.className = 'dot disconnected';
@@ -2478,12 +2591,16 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                     return;
                 }
 
-                currentProjectPath = info.projectPath;
+                currentProjectPath = cleanCepPath(info.projectPath);
                 const projectDir = path.dirname(currentProjectPath);
                 currentTargetFolder = path.join(projectDir, "YT Downloads");
 
-                if (fs && fs.mkdirSync && !fs.existsSync(currentTargetFolder)) {
-                    fs.mkdirSync(currentTargetFolder, { recursive: true });
+                try {
+                    if (fs && fs.mkdirSync && !fs.existsSync(currentTargetFolder)) {
+                        fs.mkdirSync(currentTargetFolder, { recursive: true });
+                    }
+                } catch (mkdirErr) {
+                    appendLog("Info folder: " + mkdirErr.message);
                 }
 
                 statusDot.className = 'dot connected';
@@ -2494,7 +2611,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
             } catch (e) {
                 appendLog("Error parsing getProjectInfo: " + e.message);
                 statusDot.className = 'dot disconnected';
-                statusText.textContent = "Error komunikasi ExtendScript";
+                statusText.textContent = "Error komunikasi ExtendScript: " + e.message;
             }
         });
     }
@@ -2590,7 +2707,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         let stdoutData = "";
         let stderrData = "";
 
-        const metaProc = cp.spawn(ytDlpPath, args, { env: getEnv() });
+        const metaProc = cp.spawn(ytDlpPath, args, { env: getProcessEnv() });
 
         metaProc.stdout.on('data', (chunk) => {
             stdoutData += chunk.toString();
@@ -2997,7 +3114,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                 "-show_entries", "stream=codec_name",
                 "-of", "default=noprint_wrappers=1:nokey=1",
                 filePath
-            ], { env: getEnv(), timeout: 10000 });
+            ], { env: getProcessEnv(), timeout: 10000 });
             return res.stdout ? res.stdout.toString().trim().toLowerCase() : "";
         } catch (e) {
             return "";
@@ -3058,7 +3175,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
         appendLog(`Menjalankan penyesuaian: ffmpeg ${ffmpegArgs.join(' ')}`);
 
-        const ffProc = cp.spawn(ffmpegPath, ffmpegArgs, { env: getEnv() });
+        const ffProc = cp.spawn(ffmpegPath, ffmpegArgs, { env: getProcessEnv() });
 
         ffProc.stderr.on('data', (d) => {
             const str = d.toString();
@@ -3201,7 +3318,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         appendLog(`Menjalankan perintah: ${ytDlpPath} ${args.join(' ')}`);
 
         let downloadedFilePath = "";
-        const proc = cp.spawn(ytDlpPath, args, { env: getEnv() });
+        const proc = cp.spawn(ytDlpPath, args, { env: getProcessEnv() });
 
         function handleChunkText(text) {
             const lines = text.split(/[\r\n]+/);
@@ -3325,7 +3442,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         const scriptCall = `importFileToBin(${JSON.stringify(filePath)}, ${JSON.stringify(binName)})`;
         appendLog(`Memanggil ExtendScript: ${scriptCall}`);
 
-        csInterface.evalScript(scriptCall, function (result) {
+        csInterface.evalScript(HOST_EXTENDSCRIPT_CODE + '\n' + scriptCall, function (result) {
             isDownloading = false;
             if (btnDownload) btnDownload.disabled = false;
             if (btnDownloadText) btnDownloadText.textContent = "Download & Masukkan ke Bin";
