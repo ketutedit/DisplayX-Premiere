@@ -15,7 +15,7 @@
             <span class="dx-badge">YouTube</span>
         </div>
         <div class="dx-header-actions">
-            <button class="dx-icon-btn" id="btnToggleLoop" title="Loop Video (Ulangi terus)">&#8634;</button>
+            <button class="dx-icon-btn active" id="btnHeaderLoop" title="Loop Video (Keyboard: L)">&#8634;</button>
             <button class="dx-icon-btn" id="btnToggleTheater" title="Mode Layar Penuh / Theater">&#9974;</button>
             <button class="dx-icon-btn" id="btnExternalBrowser" title="Buka di Browser Asli (Chrome/Safari)">&#8599;</button>
         </div>
@@ -48,7 +48,18 @@
         <div class="dx-player-placeholder" id="playerPlaceholder">
             <div class="dx-placeholder-icon">&#9658;</div>
             <div class="dx-placeholder-title">DisplayX Player</div>
-            <div class="dx-placeholder-desc">Cari video referensi, paste link YouTube, atau pilih kategori di bawah untuk mulai streaming.</div>
+            <div class="dx-placeholder-desc">Paste link YouTube di bawah atau cari tutorial untuk mulai streaming.</div>
+        </div>
+    </div>
+
+    <!-- Custom Interactive Timeline & In/Out Looping Scrubber -->
+    <div class="dx-timeline-bar" id="timelineBar" style="display: none;">
+        <div class="dx-timeline-track" id="timelineTrack" title="Klik untuk melompat ke waktu">
+            <div class="dx-timeline-progress" id="timelineProgress"></div>
+            <div class="dx-timeline-loop-region" id="timelineLoopRegion" style="display: none;"></div>
+            <div class="dx-marker-in" id="timelineMarkerIn" style="display: none;" title="Titik In (Awal Loop)"></div>
+            <div class="dx-marker-out" id="timelineMarkerOut" style="display: none;" title="Titik Out (Akhir Loop)"></div>
+            <div class="dx-timeline-playhead" id="timelinePlayhead"></div>
         </div>
     </div>
 
@@ -59,12 +70,19 @@
             <div class="dx-now-playing-meta">
                 <span class="dx-now-playing-channel" id="nowPlayingChannel">-</span>
                 <span id="nowPlayingDuration">0:00</span>
+                <span class="dx-loop-range-badge" id="loopRangeBadge" style="display: none;">🔁 In-Out: 0:00 - 0:00</span>
             </div>
         </div>
         <div class="dx-now-playing-actions">
             <!-- Frame-by-Frame Navigation Buttons -->
             <button class="dx-action-pill" id="btnStepBack" title="Mundur 1 Frame (Keyboard: ,)">⏮️ Frame</button>
             <button class="dx-action-pill" id="btnStepForward" title="Maju 1 Frame (Keyboard: .)">Frame ⏭️</button>
+
+            <!-- In / Out Looping Controls (Premiere Pro NLE Style) -->
+            <button class="dx-action-pill" id="btnMarkIn" title="Tandai Titik In (Keyboard: I)">[ In</button>
+            <button class="dx-action-pill" id="btnMarkOut" title="Tandai Titik Out (Keyboard: O)">Out ]</button>
+            <button class="dx-action-pill" id="btnClearInOut" title="Hapus Titik In/Out (Keyboard: X atau Opt+X)" style="display: none;">✕ Clear</button>
+            <button class="dx-action-pill active" id="btnToggleLoop" title="Toggle Looping Ulang (Keyboard: L)">🔁 Loop</button>
 
             <!-- Audio Mute/Unmute & Volume Slider -->
             <button class="dx-action-pill audio-active" id="btnAudioToggle" title="Audio On / Mute (Keyboard: M)">🔊 Audio</button>
@@ -110,19 +128,40 @@
 
     <!-- Scrollable Body / Feed Area -->
     <div class="dx-body-content">
-        <!-- Search & URL Input Box -->
-        <div class="dx-search-wrap">
-            <div class="dx-search-box">
-                <span class="dx-search-icon">&#128269;</span>
-                <input type="text" id="searchInput" class="dx-search-input" 
-                       placeholder="Paste link YouTube (https://youtu.be/...) atau ketik judul..." 
-                       autocomplete="off" spellcheck="false">
-                <button type="button" class="dx-search-clear" id="btnClearSearch">&times;</button>
-                <button type="button" class="dx-search-btn" id="btnSearch">Cari</button>
-                <button type="button" class="dx-search-btn dx-paste-btn" id="btnPasteStream" title="Paste Link YouTube dari Clipboard & Putar Langsung">📋 Paste & Putar</button>
+        <!-- Box 1: Dedicated Direct YouTube URL / Paste Stream Box -->
+        <div class="dx-card-box dx-link-card">
+            <div class="dx-box-header">
+                <span class="dx-box-title">🔗 Putar Lewat Link YouTube (Paste URL)</span>
+                <span class="dx-box-tag">⚡ 0 MB Disk (RAM Stream)</span>
             </div>
-            <!-- Auto-complete Suggestions Dropdown -->
-            <div class="dx-suggestions-list" id="suggestionsList"></div>
+            <div class="dx-input-row">
+                <span class="dx-input-icon">🔗</span>
+                <input type="text" id="urlInput" class="dx-box-input" 
+                       placeholder="Paste link YouTube di sini (contoh: https://youtu.be/...)..." 
+                       autocomplete="off" spellcheck="false">
+                <button type="button" class="dx-btn-clear" id="btnClearUrl" style="display: none;">&times;</button>
+                <button type="button" class="dx-btn-action dx-btn-primary" id="btnStreamUrl" title="Putar video dari link yang dimasukkan">▶ Putar</button>
+                <button type="button" class="dx-btn-action dx-btn-paste" id="btnPasteClipboardDirect" title="Ambil link dari clipboard & putar langsung">📋 Paste & Putar</button>
+            </div>
+        </div>
+
+        <!-- Box 2: Dedicated Search YouTube Tutorials & Videos -->
+        <div class="dx-card-box dx-search-card">
+            <div class="dx-box-header">
+                <span class="dx-box-title">🔍 Cari Video & Referensi YouTube</span>
+            </div>
+            <div class="dx-search-wrap">
+                <div class="dx-input-row">
+                    <span class="dx-input-icon">🔍</span>
+                    <input type="text" id="searchInput" class="dx-box-input" 
+                           placeholder="Ketik kata kunci (contoh: premiere pro tutorial, after effects, sfx)..." 
+                           autocomplete="off" spellcheck="false">
+                    <button type="button" class="dx-btn-clear" id="btnClearSearch" style="display: none;">&times;</button>
+                    <button type="button" class="dx-btn-action dx-btn-primary" id="btnSearch">Cari</button>
+                </div>
+                <!-- Auto-complete Suggestions Dropdown -->
+                <div class="dx-suggestions-list" id="suggestionsList"></div>
+            </div>
         </div>
 
         <!-- Quick Categories (Fred Pelle Style) -->

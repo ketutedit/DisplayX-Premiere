@@ -358,10 +358,29 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     const playerLoadingText = document.getElementById('playerLoadingText');
     const playerPlaceholder = document.getElementById('playerPlaceholder');
 
+    // Timeline Bar Elements
+    const timelineBar = document.getElementById('timelineBar');
+    const timelineTrack = document.getElementById('timelineTrack');
+    const timelineProgress = document.getElementById('timelineProgress');
+    const timelineLoopRegion = document.getElementById('timelineLoopRegion');
+    const timelineMarkerIn = document.getElementById('timelineMarkerIn');
+    const timelineMarkerOut = document.getElementById('timelineMarkerOut');
+    const timelinePlayhead = document.getElementById('timelinePlayhead');
+
+    // Now Playing Bar Elements
     const nowPlayingBar = document.getElementById('nowPlayingBar');
     const nowPlayingTitle = document.getElementById('nowPlayingTitle');
     const nowPlayingChannel = document.getElementById('nowPlayingChannel');
     const nowPlayingDuration = document.getElementById('nowPlayingDuration');
+    const loopRangeBadge = document.getElementById('loopRangeBadge');
+
+    // In / Out & Loop Controls
+    const btnMarkIn = document.getElementById('btnMarkIn');
+    const btnMarkOut = document.getElementById('btnMarkOut');
+    const btnClearInOut = document.getElementById('btnClearInOut');
+    const btnToggleLoop = document.getElementById('btnToggleLoop');
+    const btnHeaderLoop = document.getElementById('btnHeaderLoop');
+
     const btnAudioToggle = document.getElementById('btnAudioToggle');
     const volumeSlider = document.getElementById('volumeSlider');
     const btnBookmark = document.getElementById('btnBookmark');
@@ -379,9 +398,15 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     const speedMenu = document.getElementById('speedMenu');
     const currentSpeedLabel = document.getElementById('currentSpeedLabel');
 
+    // Box 1: Direct YouTube URL / Paste Stream
+    const urlInput = document.getElementById('urlInput');
+    const btnClearUrl = document.getElementById('btnClearUrl');
+    const btnStreamUrl = document.getElementById('btnStreamUrl');
+    const btnPasteClipboardDirect = document.getElementById('btnPasteClipboardDirect');
+
+    // Box 2: Search YouTube
     const searchInput = document.getElementById('searchInput');
     const btnSearch = document.getElementById('btnSearch');
-    const btnPasteStream = document.getElementById('btnPasteStream');
     const btnClearSearch = document.getElementById('btnClearSearch');
     const suggestionsList = document.getElementById('suggestionsList');
 
@@ -391,7 +416,6 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     const btnViewGrid = document.getElementById('btnViewGrid');
     const btnViewList = document.getElementById('btnViewList');
 
-    const btnToggleLoop = document.getElementById('btnToggleLoop');
     const btnToggleTheater = document.getElementById('btnToggleTheater');
     const btnExternalBrowser = document.getElementById('btnExternalBrowser');
 
@@ -411,7 +435,12 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     let hasSeparateAudio = false;
     let isAudioMuted = false;
     let audioVolume = 0.85;
-    let isLooping = false;
+
+    // Loop & In/Out Range State (Premiere Pro NLE Style)
+    let isLooping = true; // Enabled by default for reference reviewing
+    let loopIn = null; // in seconds
+    let loopOut = null; // in seconds
+
     let isSearching = false;
     let lastDetectedClipboard = "";
     let searchDebounceTimer = null;
@@ -686,10 +715,39 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         });
         nativePlayer.addEventListener('timeupdate', () => {
             syncAudioWithVideo(false);
-            if (nowPlayingDuration && nativePlayer.duration) {
-                const cur = nativePlayer.currentTime || 0;
-                const dur = nativePlayer.duration || 0;
+            const cur = nativePlayer.currentTime || 0;
+            const dur = nativePlayer.duration || 0;
+
+            // Enforce In-Out Looping (Premiere Pro NLE Work Area)
+            if (isLooping && loopIn !== null && loopOut !== null && loopOut > loopIn) {
+                if (cur >= loopOut || cur < loopIn - 0.15) {
+                    nativePlayer.currentTime = loopIn;
+                    if (nativeAudio && hasSeparateAudio) {
+                        try { nativeAudio.currentTime = loopIn; } catch (e) {}
+                    }
+                }
+            }
+
+            if (nowPlayingDuration && dur > 0) {
                 nowPlayingDuration.textContent = `${formatTimecode(cur)} / ${formatTimecode(dur)}`;
+            }
+
+            // Update Timeline Scrubber Bar
+            if (dur > 0 && timelineProgress) {
+                const pct = Math.max(0, Math.min(100, (cur / dur) * 100));
+                timelineProgress.style.width = `${pct}%`;
+                if (timelinePlayhead) timelinePlayhead.style.left = `${pct}%`;
+            }
+        });
+
+        nativePlayer.addEventListener('ended', () => {
+            if (isLooping) {
+                const restartTime = (loopIn !== null) ? loopIn : 0;
+                nativePlayer.currentTime = restartTime;
+                if (nativeAudio && hasSeparateAudio) {
+                    try { nativeAudio.currentTime = restartTime; } catch (e) {}
+                }
+                nativePlayer.play().catch(() => {});
             }
         });
     }
@@ -700,8 +758,14 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         currentVideo = { id, title, channel, duration };
         if (playerPlaceholder) playerPlaceholder.style.display = 'none';
 
-        // Update Now Playing Bar
+        // Reset In/Out loop range for new video
+        loopIn = null;
+        loopOut = null;
+        updateLoopUI();
+
+        // Update Now Playing Bar and Timeline Scrubber
         if (nowPlayingBar) nowPlayingBar.style.display = 'flex';
+        if (timelineBar) timelineBar.style.display = 'block';
         if (nowPlayingTitle) {
             nowPlayingTitle.textContent = title;
             nowPlayingTitle.title = title;
@@ -891,6 +955,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
             }
             try { nativePlayer.playbackRate = currentSpeed; } catch (e) {}
             applyAudioSettings();
+            updateLoopUI();
             syncAudioWithVideo(true);
             const p = nativePlayer.play();
             if (p) p.catch(() => {});
@@ -989,6 +1054,141 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         const countText = count > 1 ? `${count} Frames` : '1 Frame';
         const directionText = forward ? `+${countText} ⏭️` : `⏮️ -${countText}`;
         showOsd(`${directionText} • ${timecode}`);
+    }
+
+    // In/Out Looping Functions (Premiere Pro NLE Style)
+    function setMarkIn() {
+        if (!nativePlayer) return;
+        const cur = nativePlayer.currentTime || 0;
+        loopIn = cur;
+        if (loopOut !== null && loopOut <= loopIn) {
+            loopOut = null;
+        }
+        updateLoopUI();
+        const fps = currentVideoFps || 30;
+        const frame = Math.round(cur * fps);
+        showOsd(`📍 Mark In: ${formatTimecode(cur)} [F:${frame}]`);
+    }
+
+    function setMarkOut() {
+        if (!nativePlayer) return;
+        const cur = nativePlayer.currentTime || 0;
+        if (loopIn === null || cur > loopIn) {
+            loopOut = cur;
+            isLooping = true;
+        } else {
+            loopOut = cur;
+            loopIn = Math.max(0, cur - 2);
+        }
+        updateLoopUI();
+        const fps = currentVideoFps || 30;
+        const frame = Math.round(cur * fps);
+        const loopLen = (loopIn !== null) ? (loopOut - loopIn).toFixed(1) : 0;
+        showOsd(`📍 Mark Out: ${formatTimecode(cur)} [F:${frame}] (Loop: ${loopLen}s)`);
+    }
+
+    function clearInOut() {
+        loopIn = null;
+        loopOut = null;
+        updateLoopUI();
+        showOsd('✕ In/Out Dihapus');
+    }
+
+    function toggleLoop() {
+        isLooping = !isLooping;
+        updateLoopUI();
+        showOsd(isLooping ? '🔁 Loop Aktif' : 'Loop Dinonaktifkan');
+    }
+
+    function jumpToIn() {
+        if (!nativePlayer || loopIn === null) return;
+        nativePlayer.currentTime = loopIn;
+        if (nativeAudio && hasSeparateAudio) {
+            try { nativeAudio.currentTime = loopIn; } catch (e) {}
+        }
+        showOsd(`⏮️ Jump to In: ${formatTimecode(loopIn)}`);
+    }
+
+    function jumpToOut() {
+        if (!nativePlayer || loopOut === null) return;
+        nativePlayer.currentTime = loopOut;
+        if (nativeAudio && hasSeparateAudio) {
+            try { nativeAudio.currentTime = loopOut; } catch (e) {}
+        }
+        showOsd(`⏭️ Jump to Out: ${formatTimecode(loopOut)}`);
+    }
+
+    function updateLoopUI() {
+        if (btnToggleLoop) {
+            btnToggleLoop.classList.toggle('active', isLooping);
+        }
+        if (btnHeaderLoop) {
+            btnHeaderLoop.classList.toggle('active', isLooping);
+        }
+        if (btnMarkIn) {
+            btnMarkIn.classList.toggle('in-active', loopIn !== null);
+        }
+        if (btnMarkOut) {
+            btnMarkOut.classList.toggle('out-active', loopOut !== null);
+        }
+        if (btnClearInOut) {
+            btnClearInOut.style.display = (loopIn !== null || loopOut !== null) ? 'inline-flex' : 'none';
+        }
+
+        if (loopRangeBadge) {
+            if (loopIn !== null && loopOut !== null && loopOut > loopIn) {
+                loopRangeBadge.textContent = `🔁 In-Out: ${formatTimecode(loopIn)} → ${formatTimecode(loopOut)}`;
+                loopRangeBadge.style.display = 'inline-flex';
+            } else if (loopIn !== null) {
+                loopRangeBadge.textContent = `🔁 In: ${formatTimecode(loopIn)} → End`;
+                loopRangeBadge.style.display = 'inline-flex';
+            } else if (loopOut !== null) {
+                loopRangeBadge.textContent = `🔁 Start → Out: ${formatTimecode(loopOut)}`;
+                loopRangeBadge.style.display = 'inline-flex';
+            } else {
+                loopRangeBadge.style.display = 'none';
+            }
+        }
+
+        updateTimelineMarkers();
+    }
+
+    function updateTimelineMarkers() {
+        if (!nativePlayer) return;
+        const dur = nativePlayer.duration || 0;
+        if (dur <= 0) return;
+
+        if (timelineMarkerIn) {
+            if (loopIn !== null) {
+                const inPct = Math.max(0, Math.min(100, (loopIn / dur) * 100));
+                timelineMarkerIn.style.left = `${inPct}%`;
+                timelineMarkerIn.style.display = 'block';
+            } else {
+                timelineMarkerIn.style.display = 'none';
+            }
+        }
+
+        if (timelineMarkerOut) {
+            if (loopOut !== null) {
+                const outPct = Math.max(0, Math.min(100, (loopOut / dur) * 100));
+                timelineMarkerOut.style.left = `${outPct}%`;
+                timelineMarkerOut.style.display = 'block';
+            } else {
+                timelineMarkerOut.style.display = 'none';
+            }
+        }
+
+        if (timelineLoopRegion) {
+            if (loopIn !== null && loopOut !== null && loopOut > loopIn) {
+                const startPct = (loopIn / dur) * 100;
+                const widthPct = ((loopOut - loopIn) / dur) * 100;
+                timelineLoopRegion.style.left = `${startPct}%`;
+                timelineLoopRegion.style.width = `${widthPct}%`;
+                timelineLoopRegion.style.display = 'block';
+            } else {
+                timelineLoopRegion.style.display = 'none';
+            }
+        }
     }
 
     function formatTimecode(totalSeconds) {
@@ -1647,8 +1847,60 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         });
     }
 
-    // Paste & Stream Button Click
-    function handlePasteAndStream() {
+    // In/Out Looping Button Event Listeners
+    if (btnMarkIn) {
+        btnMarkIn.addEventListener('click', setMarkIn);
+    }
+    if (btnMarkOut) {
+        btnMarkOut.addEventListener('click', setMarkOut);
+    }
+    if (btnClearInOut) {
+        btnClearInOut.addEventListener('click', clearInOut);
+    }
+    if (btnToggleLoop) {
+        btnToggleLoop.addEventListener('click', toggleLoop);
+    }
+    if (btnHeaderLoop) {
+        btnHeaderLoop.addEventListener('click', toggleLoop);
+    }
+
+    // Timeline Track Click to Seek
+    if (timelineTrack) {
+        timelineTrack.addEventListener('click', (e) => {
+            if (!nativePlayer || !nativePlayer.duration) return;
+            const rect = timelineTrack.getBoundingClientRect();
+            const clickX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+            const pct = clickX / rect.width;
+            const targetSec = pct * nativePlayer.duration;
+            nativePlayer.currentTime = targetSec;
+            if (nativeAudio && hasSeparateAudio) {
+                try { nativeAudio.currentTime = targetSec; } catch (err) {}
+            }
+        });
+    }
+
+    // ==========================================
+    // BOX 1: DIRECT YOUTUBE LINK / PASTE STREAM
+    // ==========================================
+    function handleStreamUrlInput() {
+        if (!urlInput) return;
+        const val = urlInput.value.trim();
+        if (!val) {
+            showToast('Ketik atau paste link YouTube terlebih dahulu.');
+            urlInput.focus();
+            return;
+        }
+        const vidId = extractYouTubeId(val);
+        if (vidId) {
+            showToast(`🚀 Memutar stream video: ${vidId}`);
+            playVideo(vidId, "Video dari Link", "YouTube Link", "");
+        } else {
+            showToast('Bukan link YouTube valid. Contoh: https://youtu.be/...');
+            urlInput.focus();
+        }
+    }
+
+    function handlePasteClipboardDirect() {
         const processUrl = (text) => {
             if (!text) {
                 showToast('Clipboard kosong. Silakan salin link YouTube terlebih dahulu.');
@@ -1656,43 +1908,121 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
             }
             const vidId = extractYouTubeId(text);
             if (vidId) {
-                if (searchInput) searchInput.value = text.trim();
-                showToast(`🚀 Memutar stream video: ${vidId}`);
+                if (urlInput) {
+                    urlInput.value = text.trim();
+                    if (btnClearUrl) btnClearUrl.style.display = 'block';
+                }
+                showToast(`🚀 Memutar dari Clipboard: ${vidId}`);
                 playVideo(vidId, "Video dari Link", "YouTube Link", "");
             } else {
-                showToast('Bukan link YouTube valid. Contoh: https://youtu.be/...');
-                if (searchInput) searchInput.focus();
+                showToast('Clipboard tidak berisi link YouTube valid.');
+                if (urlInput) urlInput.focus();
             }
         };
 
         if (cp) {
             cp.exec('/usr/bin/pbpaste', (err, stdout) => {
                 const clip = (!err && stdout) ? stdout.trim() : '';
-                if (clip && extractYouTubeId(clip)) {
+                if (clip) {
                     processUrl(clip);
-                } else if (searchInput && searchInput.value.trim() && extractYouTubeId(searchInput.value.trim())) {
-                    processUrl(searchInput.value.trim());
-                } else if (clip) {
-                    processUrl(clip);
+                } else if (urlInput && urlInput.value.trim()) {
+                    processUrl(urlInput.value.trim());
                 } else {
-                    if (searchInput) searchInput.focus();
-                    showToast('Salin (Copy) link YouTube terlebih dahulu, atau ketik di sini.');
+                    if (urlInput) urlInput.focus();
+                    showToast('Salin (Copy) link YouTube terlebih dahulu.');
                 }
             });
         } else if (navigator.clipboard && navigator.clipboard.readText) {
             navigator.clipboard.readText().then(processUrl).catch(() => {
-                if (searchInput && searchInput.value.trim()) {
-                    processUrl(searchInput.value.trim());
+                if (urlInput && urlInput.value.trim()) {
+                    processUrl(urlInput.value.trim());
                 }
             });
-        } else if (searchInput && searchInput.value.trim()) {
-            processUrl(searchInput.value.trim());
         }
     }
 
-    if (btnPasteStream) {
-        btnPasteStream.addEventListener('click', handlePasteAndStream);
+    if (btnStreamUrl) {
+        btnStreamUrl.addEventListener('click', handleStreamUrlInput);
     }
+
+    if (btnPasteClipboardDirect) {
+        btnPasteClipboardDirect.addEventListener('click', handlePasteClipboardDirect);
+    }
+
+    if (urlInput) {
+        urlInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                handleStreamUrlInput();
+            }
+        });
+
+        urlInput.addEventListener('input', function () {
+            if (btnClearUrl) btnClearUrl.style.display = this.value.trim() ? 'block' : 'none';
+        });
+
+        urlInput.addEventListener('paste', () => {
+            setTimeout(() => {
+                const val = urlInput.value.trim();
+                const vidId = extractYouTubeId(val);
+                if (vidId) {
+                    showToast('🔗 Link terdeteksi, memutar stream...');
+                    playVideo(vidId, "Video dari Link", "YouTube Link", "");
+                }
+            }, 60);
+        });
+    }
+
+    if (btnClearUrl) {
+        btnClearUrl.addEventListener('click', () => {
+            if (urlInput) urlInput.value = '';
+            btnClearUrl.style.display = 'none';
+            if (urlInput) urlInput.focus();
+        });
+    }
+
+    // ==========================================
+    // BOX 2: SEARCH YOUTUBE TUTORIALS & VIDEOS
+    // ==========================================
+    btnSearch.addEventListener('click', () => {
+        const val = searchInput.value.trim();
+        if (val) {
+            suggestionsList.style.display = 'none';
+            searchYouTube(val);
+        }
+    });
+
+    searchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            const val = searchInput.value.trim();
+            if (val) {
+                suggestionsList.style.display = 'none';
+                searchYouTube(val);
+            }
+        }
+    });
+
+    searchInput.addEventListener('input', function () {
+        const val = this.value.trim();
+        btnClearSearch.style.display = val ? 'block' : 'none';
+
+        if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+        searchDebounceTimer = setTimeout(() => {
+            if (val.startsWith('http://') || val.startsWith('https://')) {
+                suggestionsList.style.display = 'none';
+                return;
+            }
+            fetchSuggestions(val);
+        }, 250);
+    });
+
+    btnClearSearch.addEventListener('click', () => {
+        searchInput.value = '';
+        btnClearSearch.style.display = 'none';
+        suggestionsList.style.display = 'none';
+        searchInput.focus();
+    });
 
     if (searchInput) {
         searchInput.addEventListener('paste', () => {
@@ -1700,7 +2030,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                 const val = searchInput.value.trim();
                 const vidId = extractYouTubeId(val);
                 if (vidId) {
-                    showToast('🔗 Link YouTube terdeteksi, memuat stream...');
+                    showToast('🔗 Link terdeteksi di pencarian, memuat stream...');
                     playVideo(vidId, "Video dari Link", "YouTube Link", "");
                 }
             }, 60);
@@ -1767,13 +2097,27 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         if (speedMenu) speedMenu.style.display = 'none';
     });
 
-    // Global Keyboard Shortcuts (Frame Step, Play/Pause, Seek, Audio, Volume)
+    // Global Keyboard Shortcuts (NLE Standard: In/Out, Loop, Frame Step, Play/Pause, Seek, Audio)
     window.addEventListener('keydown', (e) => {
         const active = document.activeElement;
         const isInput = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable);
-        if (isInput) return; // Do not intercept if user is typing search query
+        if (isInput) return; // Do not intercept if user is typing in URL input or search input
 
-        if (e.key === ',' || e.code === 'Comma') {
+        if (e.key === 'i' || e.key === 'I') {
+            e.preventDefault();
+            if (e.shiftKey) jumpToIn();
+            else setMarkIn();
+        } else if (e.key === 'o' || e.key === 'O') {
+            e.preventDefault();
+            if (e.shiftKey) jumpToOut();
+            else setMarkOut();
+        } else if (e.key === 'x' || e.key === 'X') {
+            e.preventDefault();
+            clearInOut();
+        } else if (e.key === 'l' || e.key === 'L') {
+            e.preventDefault();
+            toggleLoop();
+        } else if (e.key === ',' || e.code === 'Comma') {
             e.preventDefault();
             stepFrame(false, e.shiftKey ? 10 : 1);
         } else if (e.key === '.' || e.code === 'Period') {
@@ -1792,26 +2136,20 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                     showOsd('⏸️ Pause');
                 }
             }
-        } else if (e.key === 'j' || e.key === 'J') {
+        } else if (e.key === 'j' || e.key === 'J' || e.key === 'ArrowLeft') {
             e.preventDefault();
             if (nativePlayer) {
                 nativePlayer.currentTime = Math.max(0, nativePlayer.currentTime - 5);
                 if (nativeAudio && hasSeparateAudio) nativeAudio.currentTime = nativePlayer.currentTime;
                 showOsd('⏪ -5s');
             }
-        } else if (e.key === 'l' || e.key === 'L') {
+        } else if (e.key === 'ArrowRight') {
             e.preventDefault();
             if (nativePlayer) {
                 nativePlayer.currentTime = Math.min((nativePlayer.duration || Infinity), nativePlayer.currentTime + 5);
                 if (nativeAudio && hasSeparateAudio) nativeAudio.currentTime = nativePlayer.currentTime;
                 showOsd('⏩ +5s');
             }
-        } else if (e.key === 'ArrowLeft') {
-            e.preventDefault();
-            stepFrame(false, e.shiftKey ? 10 : 1);
-        } else if (e.key === 'ArrowRight') {
-            e.preventDefault();
-            stepFrame(true, e.shiftKey ? 10 : 1);
         } else if (e.key === 'ArrowUp') {
             e.preventDefault();
             changeVolumeRelative(0.05);
