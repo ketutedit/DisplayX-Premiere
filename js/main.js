@@ -209,8 +209,8 @@
                     });
                     return res.end(JSON.stringify({
                         status: 'ok',
-                        service: 'DisplayX Player Service (RefTube Pro Engine Active)',
-                        version: '2.5.0',
+                        service: 'Ardane YT Player Service (Pro Stream Engine Active)',
+                        version: '2.0.0',
                         port: PLAYER_PORT
                     }));
                 }
@@ -235,7 +235,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
 <meta name="referrer" content="origin">
-<title>DisplayX Player</title>
+<title>Ardane YT Player</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
@@ -323,22 +323,22 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                 }
 
                 res.writeHead(200, { 'Content-Type': 'text/plain' });
-                res.end('DisplayX Player Service Active');
+                res.end('Ardane YT Player Service Active');
             });
 
             playerServer.listen(PLAYER_PORT, '127.0.0.1', () => {
-                console.log(`DisplayX Player Server running on port ${PLAYER_PORT}`);
+                console.log(`Ardane YT Player Server running on port ${PLAYER_PORT}`);
             });
 
             playerServer.on('error', (err) => {
                 if (err.code === 'EADDRINUSE') {
-                    console.log(`DisplayX Player Server already active on port ${PLAYER_PORT}`);
+                    console.log(`Ardane YT Player Server already active on port ${PLAYER_PORT}`);
                 } else {
-                    console.warn('DisplayX Server notice:', err.message);
+                    console.warn('Ardane YT Player Server notice:', err.message);
                 }
             });
         } catch (e) {
-            console.warn('DisplayX Server init error:', e.message);
+            console.warn('Ardane YT Player Server init error:', e.message);
         }
     }
 
@@ -1563,7 +1563,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     }
 
     // Export global play method for inline card onclick
-    window.DisplayX = {
+    window.ArdaneYT = window.DisplayX = {
         play: function (id, title, channel, duration) {
             playVideo(id, title, channel, duration);
         },

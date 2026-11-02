@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<ExtensionManifest Version="7.0" ExtensionBundleId="com.displayx.panel" ExtensionBundleVersion="1.1.4"
-    ExtensionBundleName="DisplayX" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<ExtensionManifest Version="7.0" ExtensionBundleId="com.displayx.panel" ExtensionBundleVersion="2.0.0"
+    ExtensionBundleName="Ardane YT Player" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <ExtensionList>
-        <Extension Id="com.displayx.panel" Version="1.1.4" />
+        <Extension Id="com.displayx.panel" Version="2.0.0" />
     </ExtensionList>
     <ExecutionEnvironment>
         <HostList>
@@ -37,7 +37,7 @@
                 </Lifecycle>
                 <UI>
                     <Type>Panel</Type>
-                    <Menu>DisplayX</Menu>
+                    <Menu>Ardane YT Player</Menu>
                     <Geometry>
                         <Size>
                             <Height>720</Height>
