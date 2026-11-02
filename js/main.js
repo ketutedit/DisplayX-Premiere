@@ -258,6 +258,172 @@
         upstreamReq.end();
     }
 
+    // Inject exact video duration into FFmpeg streamed WebM EBML SegmentInfo header (Zero-Disk RAM Stream)
+    function injectWebmDuration(chunk, durationSec) {
+        if (!durationSec || durationSec <= 0 || !chunk || chunk.length < 256) return chunk;
+        try {
+            const segInfoTag = Buffer.from([0x15, 0x49, 0xa9, 0x66]);
+            const tracksTag = Buffer.from([0x16, 0x54, 0xae, 0x6b]);
+            const segIdx = chunk.indexOf(segInfoTag, 80);
+            const tracksIdx = chunk.indexOf(tracksTag, segIdx > 0 ? segIdx : 80);
+            if (segIdx <= 11 || tracksIdx <= segIdx) return chunk;
+            const segSizeByte = chunk[segIdx + 4];
+            if ((segSizeByte & 0x80) === 0) return chunk;
+            const segDataLen = segSizeByte & 0x7f;
+            if (segIdx + 5 + segDataLen !== tracksIdx) return chunk;
+            const voidIdx = chunk.lastIndexOf(0xec, segIdx - 1);
+            if (voidIdx < 0 || segIdx - voidIdx < 20) return chunk;
+            const voidTotalLen = segIdx - voidIdx;
+            const newVoidDataLen = voidTotalLen - 9 - 11;
+            if (newVoidDataLen < 0) return chunk;
+
+            const out = Buffer.from(chunk);
+            out[voidIdx + 8] = newVoidDataLen;
+            const newSegIdx = segIdx - 11;
+            chunk.copy(out, newSegIdx, segIdx, tracksIdx);
+            out[newSegIdx + 4] = 0x80 | (segDataLen + 11);
+            const durPos = tracksIdx - 11;
+            out[durPos] = 0x44;
+            out[durPos + 1] = 0x89;
+            out[durPos + 2] = 0x88;
+            out.writeDoubleBE(durationSec * 1000.0, durPos + 3);
+            return out;
+        } catch (e) {
+            return chunk;
+        }
+    }
+
+    function cleanupActiveTranscodeSession(keepKey = null) {
+        const activeSession = rootGlobal.__ardaneActiveTranscodeSession;
+        if (activeSession && activeSession.key !== keepKey) {
+            if (activeSession.proc) {
+                try { activeSession.proc.kill('SIGKILL'); } catch (e) {}
+                activeSession.proc = null;
+            }
+            if (activeSession.clients) {
+                for (const c of activeSession.clients) {
+                    try { c.end(); } catch (e) {}
+                }
+                activeSession.clients.clear();
+            }
+            activeSession.chunks = [];
+            activeSession.totalBytes = 0;
+            rootGlobal.__ardaneActiveTranscodeSession = null;
+        }
+    }
+
+    // Real-Time In-Memory MP4 (H.264/avc1) -> WebM (VP8) RAM Stream Engine for videos without >360p WebM on YouTube
+    function serveTranscodedMp4AsWebm(entry, clientReq, clientRes) {
+        if (!cp) {
+            clientRes.writeHead(500);
+            return clientRes.end("child_process unavailable");
+        }
+
+        const sessionKey = entry.sessionKey || entry.rawSourceKey || entry.url;
+        let session = rootGlobal.__ardaneActiveTranscodeSession;
+
+        if (!session || session.key !== sessionKey || (session.error && session.chunks.length === 0)) {
+            cleanupActiveTranscodeSession(null);
+
+            const ffmpegBin = resolveFfmpeg();
+            const rawProxyUrl = `http://127.0.0.1:${PLAYER_PORT}/stream?key=${encodeURIComponent(entry.rawSourceKey)}`;
+            const targetBitrate = (entry.height >= 1080) ? '3200k' : (entry.height >= 720 ? '2200k' : '1400k');
+
+            const ffArgs = [
+                '-hide_banner', '-loglevel', 'error',
+                '-reconnect', '1', '-reconnect_streamed', '1',
+                '-i', rawProxyUrl,
+                '-c:v', 'libvpx',
+                '-deadline', 'realtime',
+                '-cpu-used', '16',
+                '-threads', '8',
+                '-b:v', targetBitrate,
+                '-crf', '10',
+                '-g', '60',
+                '-an',
+                '-f', 'webm',
+                'pipe:1'
+            ];
+
+            const ffProc = cp.spawn(ffmpegBin, ffArgs, { env: getProcessEnv() });
+            session = {
+                key: sessionKey,
+                proc: ffProc,
+                chunks: [],
+                totalBytes: 0,
+                done: false,
+                error: false,
+                isFirstChunk: true,
+                clients: new Set()
+            };
+            rootGlobal.__ardaneActiveTranscodeSession = session;
+
+            const MAX_RAM_BUFFER_BYTES = 180 * 1024 * 1024; // Cap in-memory cache per video at 180MB
+
+            ffProc.stdout.on('data', (chunk) => {
+                if (session.isFirstChunk) {
+                    session.isFirstChunk = false;
+                    chunk = injectWebmDuration(chunk, entry.duration || 0);
+                }
+                if (session.totalBytes + chunk.length <= MAX_RAM_BUFFER_BYTES) {
+                    session.chunks.push(chunk);
+                    session.totalBytes += chunk.length;
+                }
+                for (const resClient of session.clients) {
+                    try {
+                        resClient.write(chunk);
+                    } catch (e) {
+                        session.clients.delete(resClient);
+                    }
+                }
+            });
+
+            ffProc.on('close', (code) => {
+                session.proc = null;
+                session.done = true;
+                if (code !== 0 && session.chunks.length === 0) {
+                    session.error = true;
+                }
+                for (const resClient of session.clients) {
+                    try { resClient.end(); } catch (e) {}
+                }
+                session.clients.clear();
+            });
+
+            ffProc.on('error', () => {
+                session.error = true;
+                session.done = true;
+                for (const resClient of session.clients) {
+                    try { resClient.end(); } catch (e) {}
+                }
+                session.clients.clear();
+            });
+        }
+
+        clientRes.writeHead(200, {
+            "Content-Type": "video/webm",
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "no-store"
+        });
+
+        for (const existingChunk of session.chunks) {
+            try {
+                clientRes.write(existingChunk);
+            } catch (e) {
+                return;
+            }
+        }
+
+        if (session.done) {
+            return clientRes.end();
+        }
+
+        session.clients.add(clientRes);
+        clientReq.on('close', () => {
+            session.clients.delete(clientRes);
+        });
+    }
+
     function startLocalPlayerServer() {
         if (!http) return;
 
@@ -337,7 +503,11 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                 const key = parsed.searchParams.get('key');
                 const activeRegistry = rootGlobal.__ardaneStreamRegistry || streamRegistry;
                 if (key && activeRegistry[key]) {
-                    return forwardRangeRequest(activeRegistry[key], req, res, 0, 0);
+                    const entry = activeRegistry[key];
+                    if (entry.isTranscodeMp4) {
+                        return serveTranscodedMp4AsWebm(entry, req, res);
+                    }
+                    return forwardRangeRequest(entry, req, res, 0, 0);
                 }
 
                 // Fallback to direct video id
@@ -617,6 +787,41 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         return '/opt/homebrew/bin/yt-dlp';
     }
 
+    function resolveFfmpeg() {
+        let extClean = "";
+        try {
+            const extRaw = csInterface.getSystemPath(SystemPath.EXTENSION);
+            extClean = cleanCepPath(extRaw);
+        } catch (e) {}
+
+        const candidates = [
+            extClean ? `${extClean}/bin/ffmpeg` : '',
+            '/opt/homebrew/bin/ffmpeg',
+            '/usr/local/bin/ffmpeg',
+            '/usr/bin/ffmpeg'
+        ].filter(Boolean);
+
+        if (fs) {
+            for (const p of candidates) {
+                try {
+                    if (fs.existsSync(p)) return p;
+                } catch (e) {}
+            }
+        }
+        return '/opt/homebrew/bin/ffmpeg';
+    }
+
+    function getEffectiveDuration() {
+        if (nativePlayer && nativePlayer.duration && isFinite(nativePlayer.duration) && nativePlayer.duration > 0) {
+            return nativePlayer.duration;
+        }
+        if (currentVideo && currentVideo.id && videoMetadataCache.has(currentVideo.id)) {
+            const meta = videoMetadataCache.get(currentVideo.id);
+            if (meta && meta.duration > 0) return meta.duration;
+        }
+        return 0;
+    }
+
     const streamUrlCache = new Map();
     function resolveStreamUrl(videoId, quality = 'auto') {
         const cacheKey = `${videoId}_${quality}`;
@@ -797,7 +1002,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         nativePlayer.addEventListener('timeupdate', () => {
             syncAudioWithVideo(false);
             const cur = nativePlayer.currentTime || 0;
-            const dur = nativePlayer.duration || 0;
+            const dur = getEffectiveDuration();
 
             // Enforce In-Out Looping (Premiere Pro NLE Work Area)
             if (isLooping && loopIn !== null && loopOut !== null && loopOut > loopIn) {
@@ -869,6 +1074,29 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
     let activeStreamLoadToken = 0;
 
+    // Dynamically adjust Quality Menu options to match the exact resolutions available on YouTube for this video
+    function updateQualityMenuForVideo(metadata) {
+        if (!qualityMenu || !metadata || !metadata.webmVideos || metadata.webmVideos.length === 0) return;
+
+        const availableHeights = metadata.webmVideos.map(f => f.height || 0).filter(Boolean);
+        const maxAvailableHeight = Math.max(...availableHeights, 360);
+
+        qualityMenu.querySelectorAll('.dx-dropdown-item').forEach(item => {
+            const qVal = item.getAttribute('data-quality');
+            if (qVal === 'auto') {
+                item.style.display = '';
+                item.textContent = `Auto (Maks ${maxAvailableHeight}p) ✨`;
+                return;
+            }
+            const targetH = parseInt(qVal, 10);
+            if (!targetH) return;
+
+            // Show resolution option only if YouTube actually has this resolution tier for this video
+            const hasTier = availableHeights.some(h => Math.abs(h - targetH) <= 40);
+            item.style.display = hasTier ? '' : 'none';
+        });
+    }
+
     function loadInProStreamEngine(videoId, targetQuality = currentQuality, seekTime = null, isAutoRefetch = false) {
         if (!videoId || !nativePlayer) return;
 
@@ -897,6 +1125,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         if (!isAutoRefetch && videoMetadataCache.has(videoId)) {
             const cached = videoMetadataCache.get(videoId);
             if (Date.now() - cached.timestamp < 25 * 60 * 1000) {
+                updateQualityMenuForVideo(cached);
                 showPlayerLoading('Memuat stream video...');
                 selectAndPlayStreamResolution(videoId, cached, targetQuality, seekTime, 0, 0, false);
                 return;
@@ -933,7 +1162,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                 const info = JSON.parse(rawJson);
                 const formats = info.formats || [];
 
-                // Filter WebM VP9/VP8 video streams (native hardware acceleration in Adobe CEF)
+                // 1. Native WebM VP9/VP8 video streams (direct hardware acceleration in Adobe CEF)
                 const webmVideos = formats.filter(f => {
                     const isWebm = f.ext === 'webm' || (f.vcodec && /^(vp0?9|vp8)/i.test(f.vcodec));
                     const hasVideo = f.vcodec && f.vcodec !== 'none' && f.height;
@@ -941,8 +1170,40 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                     return isWebm && hasVideo && isDirectHttp && f.url;
                 });
 
+                // 2. For videos where YouTube only encodes 360p in WebM and stores 720p/1080p in MP4 (H.264/avc1),
+                // include missing HD heights from MP4 (avc1) and stream them via Real-Time RAM WebM Engine (0MB disk)
+                const webmHeights = new Set(webmVideos.map(f => f.height));
+                const mp4Videos = formats.filter(f => {
+                    const isMp4H264 = (f.ext === 'mp4' || /^(avc1|h264)/i.test(f.vcodec || '')) && !/^(av01)/i.test(f.vcodec || '');
+                    const hasVideo = f.vcodec && f.vcodec !== 'none' && f.height && f.height >= 480;
+                    const isDirectHttp = f.protocol === 'https' || f.protocol === 'http';
+                    return isMp4H264 && hasVideo && isDirectHttp && f.url;
+                });
+
+                mp4Videos.sort((a, b) => {
+                    if ((b.height || 0) !== (a.height || 0)) return (b.height || 0) - (a.height || 0);
+                    if ((b.fps || 0) !== (a.fps || 0)) return (b.fps || 0) - (a.fps || 0);
+                    return (b.tbr || 0) - (a.tbr || 0);
+                });
+
+                const addedMp4Heights = new Set();
+                for (const mp4Fmt of mp4Videos) {
+                    const h = mp4Fmt.height;
+                    const alreadyHasNearHeight = Array.from(webmHeights).some(wh => Math.abs(wh - h) <= 30);
+                    if (!alreadyHasNearHeight && !addedMp4Heights.has(h)) {
+                        addedMp4Heights.add(h);
+                        webmVideos.push(Object.assign({}, mp4Fmt, {
+                            isTranscodeMp4: true
+                        }));
+                    }
+                }
+
                 webmVideos.sort((a, b) => {
                     if ((b.height || 0) !== (a.height || 0)) return (b.height || 0) - (a.height || 0);
+                    // Always prefer native WebM over transcode at the exact same resolution
+                    if (Boolean(a.isTranscodeMp4) !== Boolean(b.isTranscodeMp4)) {
+                        return a.isTranscodeMp4 ? 1 : -1;
+                    }
                     if ((b.fps || 0) !== (a.fps || 0)) return (b.fps || 0) - (a.fps || 0);
                     return (b.tbr || 0) - (a.tbr || 0);
                 });
@@ -958,8 +1219,8 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                 opusAudios.sort((a, b) => (b.abr || b.tbr || 0) - (a.abr || a.tbr || 0));
 
                 if (webmVideos.length === 0) {
-                    console.log('No WebM formats found');
-                    showPlayerError('Format stream video (WebM VP9) tidak ditemukan untuk video ini.');
+                    console.log('No playable video formats found');
+                    showPlayerError('Format stream video tidak ditemukan untuk video ini.');
                     return;
                 }
 
@@ -988,6 +1249,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                 };
 
                 videoMetadataCache.set(videoId, metadata);
+                updateQualityMenuForVideo(metadata);
                 selectAndPlayStreamResolution(videoId, metadata, targetQuality, seekTime, 0, 0, isAutoRefetch);
 
             } catch (err) {
@@ -1015,7 +1277,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         const loadToken = ++activeStreamLoadToken;
 
         const maxH = targetQuality === 'auto' ? Infinity : parseInt(targetQuality, 10);
-        let candidates = metadata.webmVideos.filter(f => (f.height || 0) <= maxH);
+        let candidates = metadata.webmVideos.filter(f => (f.height || 0) <= maxH + 30);
         if (candidates.length === 0) candidates = metadata.webmVideos;
 
         const safeIndex = Math.min(candidateIndex, candidates.length - 1);
@@ -1030,14 +1292,43 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
         const vKey = `video_${videoId}_${chosenVideo.format_id || chosenVideo.height}`;
         const existingVEntry = activeRegistry[vKey];
-        activeRegistry[vKey] = {
-            url: chosenVideo.url,
-            currentUrl: (retryAttempt === 0 && existingVEntry && existingVEntry.url === chosenVideo.url) ? existingVEntry.currentUrl : null,
-            headers: chosenVideo.http_headers || {},
-            filesize: chosenVideo.filesize || chosenVideo.filesize_approx || 0,
-            mimeType: 'video/webm'
-        };
-        streamRegistry[vKey] = activeRegistry[vKey];
+
+        if (chosenVideo.isTranscodeMp4) {
+            const rawSourceKey = `raw_${vKey}`;
+            const existingRawEntry = activeRegistry[rawSourceKey];
+            activeRegistry[rawSourceKey] = {
+                url: chosenVideo.url,
+                currentUrl: (retryAttempt === 0 && existingRawEntry && existingRawEntry.url === chosenVideo.url) ? existingRawEntry.currentUrl : null,
+                headers: chosenVideo.http_headers || {},
+                filesize: chosenVideo.filesize || chosenVideo.filesize_approx || 0,
+                mimeType: 'video/mp4',
+                isTranscodeMp4: false
+            };
+            streamRegistry[rawSourceKey] = activeRegistry[rawSourceKey];
+
+            activeRegistry[vKey] = {
+                url: chosenVideo.url,
+                rawSourceKey: rawSourceKey,
+                sessionKey: vKey,
+                isTranscodeMp4: true,
+                height: chosenVideo.height || 1080,
+                fps: currentVideoFps || 30,
+                duration: metadata.duration || 0,
+                mimeType: 'video/webm'
+            };
+            streamRegistry[vKey] = activeRegistry[vKey];
+        } else {
+            cleanupActiveTranscodeSession(null);
+            activeRegistry[vKey] = {
+                url: chosenVideo.url,
+                currentUrl: (retryAttempt === 0 && existingVEntry && existingVEntry.url === chosenVideo.url) ? existingVEntry.currentUrl : null,
+                headers: chosenVideo.http_headers || {},
+                filesize: chosenVideo.filesize || chosenVideo.filesize_approx || 0,
+                mimeType: 'video/webm',
+                isTranscodeMp4: false
+            };
+            streamRegistry[vKey] = activeRegistry[vKey];
+        }
 
         const cacheBust = retryAttempt > 0 ? `&r=${retryAttempt}&t=${Date.now()}` : '';
         const vStreamUrl = `http://127.0.0.1:${PLAYER_PORT}/stream?key=${encodeURIComponent(vKey)}${cacheBust}`;
@@ -1072,7 +1363,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
         try { nativePlayer.pause(); } catch (e) {}
 
-        let pendingSeek = (preserveTimeSec !== null && preserveTimeSec > 0) ? preserveTimeSec : null;
+        let pendingSeek = (preserveTimeSec !== null && preserveTimeSec > 0 && !chosenVideo.isTranscodeMp4) ? preserveTimeSec : null;
         let hasStartedPlayback = false;
 
         const triggerSafePlay = () => {
@@ -1133,7 +1424,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                 return;
             }
 
-            // Automatic Self-Healing Stage 2: Step down to next available WebM resolution (e.g. 1440p -> 1080p -> 720p)
+            // Automatic Self-Healing Stage 2: Step down to next available resolution (e.g. 1440p -> 1080p -> 720p)
             if (safeIndex + 1 < candidates.length) {
                 const nextVideo = candidates[safeIndex + 1];
                 console.log(`[Ardane Stream] Stepping down resolution from ${chosenVideo.height}p to ${nextVideo.height}p...`);
@@ -1179,7 +1470,8 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         });
 
         if (retryAttempt === 0) {
-            showOsd(`📺 ${actualResLabel} WebM • ${Math.round(currentVideoFps)}fps`);
+            const engineTag = chosenVideo.isTranscodeMp4 ? 'HD Pro' : 'WebM';
+            showOsd(`📺 ${actualResLabel} ${engineTag} • ${Math.round(currentVideoFps)}fps`);
         }
     }
 
@@ -1345,7 +1637,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
     function updateTimelineMarkers() {
         if (!nativePlayer) return;
-        const dur = nativePlayer.duration || 0;
+        const dur = getEffectiveDuration();
         if (dur <= 0) return;
 
         if (timelineMarkerIn) {
@@ -2097,11 +2389,12 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     // Timeline Track Click to Seek
     if (timelineTrack) {
         timelineTrack.addEventListener('click', (e) => {
-            if (!nativePlayer || !nativePlayer.duration) return;
+            const dur = getEffectiveDuration();
+            if (!nativePlayer || !dur) return;
             const rect = timelineTrack.getBoundingClientRect();
             const clickX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
             const pct = clickX / rect.width;
-            const targetSec = pct * nativePlayer.duration;
+            const targetSec = pct * dur;
             nativePlayer.currentTime = targetSec;
             if (nativeAudio && hasSeparateAudio) {
                 try { nativeAudio.currentTime = targetSec; } catch (err) {}
