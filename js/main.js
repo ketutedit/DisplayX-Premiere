@@ -408,7 +408,11 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
             const ytDlp = resolveYtDlp();
 
             let formatRule = '22/18/b[ext=mp4]/best[ext=mp4]/best';
-            if (quality === '720') {
+            if (quality === '2160' || quality === '4k') {
+                formatRule = '22/18/b[ext=mp4]/best[ext=mp4]/best';
+            } else if (quality === '1080') {
+                formatRule = '22/18/b[ext=mp4]/best[ext=mp4]/best';
+            } else if (quality === '720') {
                 formatRule = '22/b[ext=mp4][height<=720]/18/best[ext=mp4]';
             } else if (quality === '480') {
                 formatRule = '18/b[ext=mp4][height<=480]/best[height<=480]';
