@@ -54,6 +54,23 @@
                 <video id="nativePlayer" class="dx-player-frame" controls playsinline autoplay style="display: none;"></video>
                 <audio id="nativeAudio" preload="auto" style="display: none;"></audio>
 
+                <!-- Custom In-Player Scrubber & Controls Overlay (For Full Scrubbing on HD Pro MP4 Streams) -->
+                <div class="dx-custom-vcontrols" id="customVideoControls" style="display: none;">
+                    <div class="dx-vc-scrubber-wrap" id="vcScrubberWrap" title="Geser atau klik playhead untuk melompat ke waktu">
+                        <div class="dx-vc-scrubber-track">
+                            <div class="dx-vc-scrubber-buffered" id="vcScrubberBuffered"></div>
+                            <div class="dx-vc-scrubber-progress" id="vcScrubberProgress"></div>
+                            <div class="dx-vc-scrubber-thumb" id="vcScrubberThumb"></div>
+                        </div>
+                    </div>
+                    <div class="dx-vc-bottom-row">
+                        <button type="button" class="dx-vc-btn" id="vcBtnPlayPause" title="Play / Pause (Space)">&#9658;</button>
+                        <span class="dx-vc-time" id="vcTimeText">0:00 / 0:00</span>
+                        <div class="dx-vc-spacer"></div>
+                        <button type="button" class="dx-vc-btn" id="vcBtnFullscreen" title="Mode Layar Penuh">&#x26F6;</button>
+                    </div>
+                </div>
+
                 <!-- On-Screen Display Badge (Frame Step & Shortcuts) -->
                 <div class="dx-player-osd" id="playerOsd" style="display: none;"></div>
 

@@ -287,6 +287,13 @@
             out[durPos + 1] = 0x89;
             out[durPos + 2] = 0x88;
             out.writeDoubleBE(durationSec * 1000.0, durPos + 3);
+
+            // Update SeekHead pointer for SegmentInfo (15 49 a9 66 53 ac 81 <offset>) so 206 Partial Content seeking works natively
+            const seekEntryTag = Buffer.from([0x15, 0x49, 0xa9, 0x66, 0x53, 0xac, 0x81]);
+            const seekIdx = out.indexOf(seekEntryTag, 0);
+            if (seekIdx > 0 && seekIdx < 80) {
+                out[seekIdx + 7] -= 11;
+            }
             return out;
         } catch (e) {
             return chunk;
@@ -312,14 +319,16 @@
         }
     }
 
-    // Real-Time In-Memory MP4 (H.264/avc1) -> WebM (VP8) RAM Stream Engine for videos without >360p WebM on YouTube
-    function serveTranscodedMp4AsWebm(entry, clientReq, clientRes) {
+    // Real-Time In-Memory MP4 (H.264/avc1) -> WebM (VP8) RAM Stream Engine with 206 Byte-Range & Time-Offset Scrubbing
+    function serveTranscodedMp4AsWebm(entry, clientReq, clientRes, startOffsetParam = '0') {
         if (!cp) {
             clientRes.writeHead(500);
             return clientRes.end("child_process unavailable");
         }
 
-        const sessionKey = entry.sessionKey || entry.rawSourceKey || entry.url;
+        const startSec = Math.max(0, parseFloat(startOffsetParam) || 0);
+        const baseKey = entry.sessionKey || entry.rawSourceKey || entry.url;
+        const sessionKey = `${baseKey}_s_${startSec.toFixed(1)}`;
         let session = rootGlobal.__ardaneActiveTranscodeSession;
 
         if (!session || session.key !== sessionKey || (session.error && session.chunks.length === 0)) {
@@ -330,7 +339,12 @@
             const targetBitrate = (entry.height >= 1080) ? '3200k' : (entry.height >= 720 ? '2200k' : '1400k');
 
             const ffArgs = [
-                '-hide_banner', '-loglevel', 'error',
+                '-hide_banner', '-loglevel', 'error'
+            ];
+            if (startSec > 0.2) {
+                ffArgs.push('-ss', startSec.toFixed(2));
+            }
+            ffArgs.push(
                 '-reconnect', '1', '-reconnect_streamed', '1',
                 '-i', rawProxyUrl,
                 '-c:v', 'libvpx',
@@ -339,15 +353,16 @@
                 '-threads', '8',
                 '-b:v', targetBitrate,
                 '-crf', '10',
-                '-g', '60',
+                '-g', '30',
                 '-an',
                 '-f', 'webm',
                 'pipe:1'
-            ];
+            );
 
             const ffProc = cp.spawn(ffmpegBin, ffArgs, { env: getProcessEnv() });
             session = {
                 key: sessionKey,
+                startSec: startSec,
                 proc: ffProc,
                 chunks: [],
                 totalBytes: 0,
@@ -363,7 +378,8 @@
             ffProc.stdout.on('data', (chunk) => {
                 if (session.isFirstChunk) {
                     session.isFirstChunk = false;
-                    chunk = injectWebmDuration(chunk, entry.duration || 0);
+                    const remainingDur = Math.max(1, (entry.duration || 0) - startSec);
+                    chunk = injectWebmDuration(chunk, remainingDur);
                 }
                 if (session.totalBytes + chunk.length <= MAX_RAM_BUFFER_BYTES) {
                     session.chunks.push(chunk);
@@ -400,17 +416,47 @@
             });
         }
 
-        clientRes.writeHead(200, {
+        let startByte = 0;
+        if (clientReq.headers && clientReq.headers['range']) {
+            const m = clientReq.headers['range'].match(/bytes=(\d+)-/);
+            if (m) {
+                startByte = parseInt(m[1], 10) || 0;
+            }
+        }
+
+        const virtualTotal = session.done
+            ? Math.max(session.totalBytes, startByte + 1)
+            : Math.max(session.totalBytes + 25 * 1024 * 1024, 180 * 1024 * 1024);
+
+        clientRes.writeHead(206, {
             "Content-Type": "video/webm",
+            "Accept-Ranges": "bytes",
+            "Content-Range": `bytes ${startByte}-${virtualTotal - 1}/${virtualTotal}`,
             "Access-Control-Allow-Origin": "*",
             "Cache-Control": "no-store"
         });
 
-        for (const existingChunk of session.chunks) {
-            try {
-                clientRes.write(existingChunk);
-            } catch (e) {
-                return;
+        if (startByte === 0) {
+            for (const existingChunk of session.chunks) {
+                try {
+                    clientRes.write(existingChunk);
+                } catch (e) {
+                    return;
+                }
+            }
+        } else if (startByte < session.totalBytes) {
+            let offset = 0;
+            for (const existingChunk of session.chunks) {
+                const nextOffset = offset + existingChunk.length;
+                if (nextOffset > startByte) {
+                    const sliceStart = Math.max(0, startByte - offset);
+                    try {
+                        clientRes.write(existingChunk.slice(sliceStart));
+                    } catch (e) {
+                        return;
+                    }
+                }
+                offset = nextOffset;
             }
         }
 
@@ -501,11 +547,12 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
             if (parsed.pathname === '/stream') {
                 // RefTube Pro In-Memory Stream Key (Direct WebM VP9 Video / Opus Audio in RAM)
                 const key = parsed.searchParams.get('key');
+                const startParam = parsed.searchParams.get('start') || '0';
                 const activeRegistry = rootGlobal.__ardaneStreamRegistry || streamRegistry;
                 if (key && activeRegistry[key]) {
                     const entry = activeRegistry[key];
                     if (entry.isTranscodeMp4) {
-                        return serveTranscodedMp4AsWebm(entry, req, res);
+                        return serveTranscodedMp4AsWebm(entry, req, res, startParam);
                     }
                     return forwardRangeRequest(entry, req, res, 0, 0);
                 }
@@ -609,6 +656,16 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     const playerLoadingText = document.getElementById('playerLoadingText');
     const playerPlaceholder = document.getElementById('playerPlaceholder');
 
+    // Custom In-Player Scrubber Controls (Active on MP4 HD Pro streams)
+    const customVideoControls = document.getElementById('customVideoControls');
+    const vcScrubberWrap = document.getElementById('vcScrubberWrap');
+    const vcScrubberBuffered = document.getElementById('vcScrubberBuffered');
+    const vcScrubberProgress = document.getElementById('vcScrubberProgress');
+    const vcScrubberThumb = document.getElementById('vcScrubberThumb');
+    const vcBtnPlayPause = document.getElementById('vcBtnPlayPause');
+    const vcTimeText = document.getElementById('vcTimeText');
+    const vcBtnFullscreen = document.getElementById('vcBtnFullscreen');
+
     // Timeline Bar Elements
     const timelineBar = document.getElementById('timelineBar');
     const timelineTrack = document.getElementById('timelineTrack');
@@ -686,6 +743,10 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     let hasSeparateAudio = false;
     let isAudioMuted = false;
     let audioVolume = 0.85;
+    let isCurrentStreamTranscodeMp4 = false;
+    let transcodeTimeOffset = 0;
+    let activeTranscodeVKey = '';
+    let isScrubbingTimeline = false;
 
     // Loop & In/Out Range State (Premiere Pro NLE Style)
     let isLooping = true; // Enabled by default for reference reviewing
@@ -812,14 +873,143 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     }
 
     function getEffectiveDuration() {
-        if (nativePlayer && nativePlayer.duration && isFinite(nativePlayer.duration) && nativePlayer.duration > 0) {
-            return nativePlayer.duration;
-        }
         if (currentVideo && currentVideo.id && videoMetadataCache.has(currentVideo.id)) {
             const meta = videoMetadataCache.get(currentVideo.id);
             if (meta && meta.duration > 0) return meta.duration;
         }
+        if (nativePlayer && nativePlayer.duration && isFinite(nativePlayer.duration) && nativePlayer.duration > 0) {
+            return nativePlayer.duration;
+        }
         return 0;
+    }
+
+    function getEffectiveCurrentTime() {
+        const raw = (nativePlayer && isFinite(nativePlayer.currentTime)) ? nativePlayer.currentTime : 0;
+        return isCurrentStreamTranscodeMp4 ? Math.max(0, transcodeTimeOffset + raw) : Math.max(0, raw);
+    }
+
+    function formatShortTime(totalSeconds) {
+        if (!totalSeconds || isNaN(totalSeconds) || totalSeconds < 0) return '0:00';
+        const sec = Math.floor(totalSeconds);
+        const hrs = Math.floor(sec / 3600);
+        const mins = Math.floor((sec % 3600) / 60);
+        const secs = sec % 60;
+        const pad2 = n => String(n).padStart(2, '0');
+        if (hrs > 0) return `${hrs}:${pad2(mins)}:${pad2(secs)}`;
+        return `${mins}:${pad2(secs)}`;
+    }
+
+    function updatePlayheadUI(curSec, durSec) {
+        const dur = durSec || getEffectiveDuration();
+        if (dur <= 0) return;
+        const clampedCur = Math.max(0, Math.min(dur, curSec));
+        const pct = Math.max(0, Math.min(100, (clampedCur / dur) * 100));
+
+        if (nowPlayingDuration) {
+            nowPlayingDuration.textContent = `${formatTimecode(clampedCur)} / ${formatTimecode(dur)}`;
+        }
+        if (timelineProgress) timelineProgress.style.width = `${pct}%`;
+        if (timelinePlayhead) timelinePlayhead.style.left = `${pct}%`;
+
+        if (vcScrubberProgress) vcScrubberProgress.style.width = `${pct}%`;
+        if (vcScrubberThumb) vcScrubberThumb.style.left = `${pct}%`;
+        if (vcTimeText) {
+            vcTimeText.textContent = `${formatShortTime(clampedCur)} / ${formatShortTime(dur)}`;
+        }
+        if (vcScrubberBuffered && nativePlayer) {
+            try {
+                if (nativePlayer.buffered && nativePlayer.buffered.length > 0) {
+                    const bufEndRel = nativePlayer.buffered.end(nativePlayer.buffered.length - 1);
+                    const bufEndAbs = isCurrentStreamTranscodeMp4 ? (transcodeTimeOffset + bufEndRel) : bufEndRel;
+                    const bufPct = Math.max(pct, Math.min(100, (bufEndAbs / dur) * 100));
+                    vcScrubberBuffered.style.width = `${bufPct}%`;
+                }
+            } catch (e) {}
+        }
+    }
+
+    function seekVideoTo(targetSec, isLiveDrag = false) {
+        if (!nativePlayer) return;
+        const dur = getEffectiveDuration();
+        const maxSeek = dur > 0 ? Math.max(0, dur - 0.15) : Math.max(0, targetSec);
+        const clamped = Math.max(0, Math.min(maxSeek, targetSec));
+
+        updatePlayheadUI(clamped, dur);
+
+        // Native WebM VP9 stream: direct instant seek
+        if (!isCurrentStreamTranscodeMp4) {
+            try {
+                nativePlayer.currentTime = clamped;
+                if (nativeAudio && hasSeparateAudio) {
+                    nativeAudio.currentTime = clamped;
+                }
+            } catch (e) {}
+            return;
+        }
+
+        // MP4 HD Pro Transcode stream:
+        // Case A: Target is within the already-buffered RAM range -> 0ms instant native seek!
+        const relSec = clamped - transcodeTimeOffset;
+        let maxBufferedRel = 0;
+        try {
+            if (nativePlayer.buffered && nativePlayer.buffered.length > 0) {
+                maxBufferedRel = nativePlayer.buffered.end(nativePlayer.buffered.length - 1);
+            }
+        } catch (e) {}
+
+        if (relSec >= 0 && relSec <= maxBufferedRel + 2.5) {
+            try {
+                nativePlayer.currentTime = relSec;
+                if (nativeAudio && hasSeparateAudio) {
+                    nativeAudio.currentTime = clamped;
+                }
+            } catch (e) {}
+            return;
+        }
+
+        // If user is still dragging mouse across unbuffered territory, update visual scrubber only until mouseup
+        if (isLiveDrag) {
+            return;
+        }
+
+        // Case B: Target is beyond current RAM buffer (or before current offset) -> Fast FFmpeg -ss jump (< 1s)
+        if (!activeTranscodeVKey) return;
+        const wasPaused = nativePlayer.paused;
+        transcodeTimeOffset = clamped;
+        const loadToken = ++activeStreamLoadToken;
+
+        showOsd(`⏩ Melompat ke ${formatShortTime(clamped)}`);
+
+        const seekStreamUrl = `http://127.0.0.1:${PLAYER_PORT}/stream?key=${encodeURIComponent(activeTranscodeVKey)}&start=${clamped.toFixed(2)}&t=${Date.now()}`;
+
+        nativePlayer.onloadedmetadata = null;
+        nativePlayer.oncanplay = null;
+
+        let resumed = false;
+        const onSeekStreamReady = () => {
+            if (loadToken !== activeStreamLoadToken || resumed) return;
+            resumed = true;
+            hidePlayerLoading();
+            try { nativePlayer.playbackRate = currentSpeed; } catch (e) {}
+            if (nativeAudio && hasSeparateAudio) {
+                try { nativeAudio.currentTime = clamped; } catch (e) {}
+            }
+            if (!wasPaused) {
+                const p = nativePlayer.play();
+                if (p && typeof p.catch === 'function') p.catch(() => {});
+            }
+            syncAudioWithVideo(true);
+        };
+
+        nativePlayer.onloadedmetadata = onSeekStreamReady;
+        nativePlayer.oncanplay = onSeekStreamReady;
+
+        if (nativeAudio && hasSeparateAudio) {
+            try { nativeAudio.currentTime = clamped; } catch (e) {}
+        }
+
+        nativePlayer.src = seekStreamUrl;
+        nativePlayer.load();
     }
 
     const streamUrlCache = new Map();
@@ -947,7 +1137,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
             return;
         }
 
-        const vTime = nativePlayer.currentTime || 0;
+        const vTime = getEffectiveCurrentTime();
         const aTime = nativeAudio.currentTime || 0;
         if (forceSeek || Math.abs(vTime - aTime) > 0.08) {
             try {
@@ -986,53 +1176,50 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     }
 
     if (nativePlayer) {
-        nativePlayer.addEventListener('play', () => syncAudioWithVideo(true));
-        nativePlayer.addEventListener('pause', () => { if (nativeAudio && hasSeparateAudio) nativeAudio.pause(); });
+        nativePlayer.addEventListener('play', () => {
+            if (vcBtnPlayPause) vcBtnPlayPause.textContent = '⏸';
+            syncAudioWithVideo(true);
+        });
+        nativePlayer.addEventListener('pause', () => {
+            if (vcBtnPlayPause) vcBtnPlayPause.textContent = '▶';
+            if (nativeAudio && hasSeparateAudio) nativeAudio.pause();
+        });
         nativePlayer.addEventListener('seeking', () => {
             if (nativeAudio && hasSeparateAudio) {
-                try { nativeAudio.currentTime = nativePlayer.currentTime; } catch (e) {}
+                try { nativeAudio.currentTime = getEffectiveCurrentTime(); } catch (e) {}
             }
         });
         nativePlayer.addEventListener('seeked', () => syncAudioWithVideo(true));
         nativePlayer.addEventListener('waiting', () => { if (nativeAudio && hasSeparateAudio) nativeAudio.pause(); });
-        nativePlayer.addEventListener('playing', () => syncAudioWithVideo(true));
+        nativePlayer.addEventListener('playing', () => {
+            if (vcBtnPlayPause) vcBtnPlayPause.textContent = '⏸';
+            syncAudioWithVideo(true);
+        });
         nativePlayer.addEventListener('ratechange', () => {
             if (nativeAudio && hasSeparateAudio) nativeAudio.playbackRate = nativePlayer.playbackRate;
         });
         nativePlayer.addEventListener('timeupdate', () => {
             syncAudioWithVideo(false);
-            const cur = nativePlayer.currentTime || 0;
+            const cur = getEffectiveCurrentTime();
             const dur = getEffectiveDuration();
 
             // Enforce In-Out Looping (Premiere Pro NLE Work Area)
             if (isLooping && loopIn !== null && loopOut !== null && loopOut > loopIn) {
-                if (cur >= loopOut || cur < loopIn - 0.15) {
-                    nativePlayer.currentTime = loopIn;
-                    if (nativeAudio && hasSeparateAudio) {
-                        try { nativeAudio.currentTime = loopIn; } catch (e) {}
-                    }
+                if (cur >= loopOut || cur < loopIn - 0.25) {
+                    seekVideoTo(loopIn, false);
+                    return;
                 }
             }
 
-            if (nowPlayingDuration && dur > 0) {
-                nowPlayingDuration.textContent = `${formatTimecode(cur)} / ${formatTimecode(dur)}`;
-            }
-
-            // Update Timeline Scrubber Bar
-            if (dur > 0 && timelineProgress) {
-                const pct = Math.max(0, Math.min(100, (cur / dur) * 100));
-                timelineProgress.style.width = `${pct}%`;
-                if (timelinePlayhead) timelinePlayhead.style.left = `${pct}%`;
+            if (!isScrubbingTimeline) {
+                updatePlayheadUI(cur, dur);
             }
         });
 
         nativePlayer.addEventListener('ended', () => {
             if (isLooping) {
                 const restartTime = (loopIn !== null) ? loopIn : 0;
-                nativePlayer.currentTime = restartTime;
-                if (nativeAudio && hasSeparateAudio) {
-                    try { nativeAudio.currentTime = restartTime; } catch (e) {}
-                }
+                seekVideoTo(restartTime, false);
                 nativePlayer.play().catch(() => {});
             }
         });
@@ -1293,6 +1480,22 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         const vKey = `video_${videoId}_${chosenVideo.format_id || chosenVideo.height}`;
         const existingVEntry = activeRegistry[vKey];
 
+        isCurrentStreamTranscodeMp4 = Boolean(chosenVideo.isTranscodeMp4);
+        activeTranscodeVKey = vKey;
+        transcodeTimeOffset = (isCurrentStreamTranscodeMp4 && preserveTimeSec && preserveTimeSec > 0) ? preserveTimeSec : 0;
+
+        // Toggle custom in-player scrubber controls for MP4 HD Pro streams so playhead is 100% draggable across full duration
+        if (nativePlayer) {
+            nativePlayer.controls = !isCurrentStreamTranscodeMp4;
+        }
+        if (customVideoControls) {
+            customVideoControls.style.display = isCurrentStreamTranscodeMp4 ? 'flex' : 'none';
+        }
+        if (vcScrubberBuffered) {
+            vcScrubberBuffered.style.width = '0%';
+        }
+        updatePlayheadUI(preserveTimeSec || 0, metadata.duration || 0);
+
         if (chosenVideo.isTranscodeMp4) {
             const rawSourceKey = `raw_${vKey}`;
             const existingRawEntry = activeRegistry[rawSourceKey];
@@ -1330,8 +1533,9 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
             streamRegistry[vKey] = activeRegistry[vKey];
         }
 
+        const startQuery = (isCurrentStreamTranscodeMp4 && transcodeTimeOffset > 0) ? `&start=${transcodeTimeOffset.toFixed(2)}` : '';
         const cacheBust = retryAttempt > 0 ? `&r=${retryAttempt}&t=${Date.now()}` : '';
-        const vStreamUrl = `http://127.0.0.1:${PLAYER_PORT}/stream?key=${encodeURIComponent(vKey)}${cacheBust}`;
+        const vStreamUrl = `http://127.0.0.1:${PLAYER_PORT}/stream?key=${encodeURIComponent(vKey)}${startQuery}${cacheBust}`;
 
         if (bestAudio && bestAudio.url) {
             const aKey = `audio_${videoId}_${bestAudio.format_id || 'opus'}`;
@@ -1377,6 +1581,8 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                         if (nativeAudio && hasSeparateAudio) nativeAudio.currentTime = pendingSeek;
                     } catch (e) {}
                     pendingSeek = null;
+                } else if (isCurrentStreamTranscodeMp4 && transcodeTimeOffset > 0 && nativeAudio && hasSeparateAudio) {
+                    try { nativeAudio.currentTime = transcodeTimeOffset; } catch (e) {}
                 }
                 try { nativePlayer.playbackRate = currentSpeed; } catch (e) {}
                 applyAudioSettings();
@@ -1401,8 +1607,8 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
             const err = nativePlayer.error;
             if (err && err.code === 1) return; // Routine abort ignored
 
-            const currentPlayTime = (nativePlayer && nativePlayer.currentTime > 0)
-                ? nativePlayer.currentTime
+            const currentPlayTime = getEffectiveCurrentTime() > 0
+                ? getEffectiveCurrentTime()
                 : preserveTimeSec;
 
             // Automatic Self-Healing Stage 1: Re-trigger stream connection (up to 2 automatic retries)
@@ -1477,7 +1683,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
     function changeQuality(newQuality, label) {
         if (!currentVideo || !currentVideo.id) return;
-        const prevTime = nativePlayer ? nativePlayer.currentTime : 0;
+        const prevTime = getEffectiveCurrentTime();
         currentQuality = newQuality;
         if (currentQualityLabel) currentQualityLabel.textContent = label;
 
@@ -1521,13 +1727,10 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
             nativePlayer.pause();
             if (nativeAudio && hasSeparateAudio) nativeAudio.pause();
         }
-        const currentFrame = Math.round((nativePlayer.currentTime || 0) * fps);
+        const currentFrame = Math.round(getEffectiveCurrentTime() * fps);
         const targetFrame = forward ? currentFrame + count : Math.max(0, currentFrame - count);
         const targetSec = Math.max(0, targetFrame * frameDuration);
-        nativePlayer.currentTime = targetSec;
-        if (nativeAudio && hasSeparateAudio) {
-            try { nativeAudio.currentTime = targetSec; } catch (e) {}
-        }
+        seekVideoTo(targetSec, false);
         showFrameOsd(forward, targetSec, count);
     }
 
@@ -1541,7 +1744,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     // In/Out Looping Functions (Premiere Pro NLE Style)
     function setMarkIn() {
         if (!nativePlayer) return;
-        const cur = nativePlayer.currentTime || 0;
+        const cur = getEffectiveCurrentTime();
         loopIn = cur;
         if (loopOut !== null && loopOut <= loopIn) {
             loopOut = null;
@@ -1554,7 +1757,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
     function setMarkOut() {
         if (!nativePlayer) return;
-        const cur = nativePlayer.currentTime || 0;
+        const cur = getEffectiveCurrentTime();
         if (loopIn === null || cur > loopIn) {
             loopOut = cur;
             isLooping = true;
@@ -1584,19 +1787,13 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
     function jumpToIn() {
         if (!nativePlayer || loopIn === null) return;
-        nativePlayer.currentTime = loopIn;
-        if (nativeAudio && hasSeparateAudio) {
-            try { nativeAudio.currentTime = loopIn; } catch (e) {}
-        }
+        seekVideoTo(loopIn, false);
         showOsd(`⏮️ Jump to In: ${formatTimecode(loopIn)}`);
     }
 
     function jumpToOut() {
         if (!nativePlayer || loopOut === null) return;
-        nativePlayer.currentTime = loopOut;
-        if (nativeAudio && hasSeparateAudio) {
-            try { nativeAudio.currentTime = loopOut; } catch (e) {}
-        }
+        seekVideoTo(loopOut, false);
         showOsd(`⏭️ Jump to Out: ${formatTimecode(loopOut)}`);
     }
 
@@ -2386,18 +2583,96 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         btnHeaderLoop.addEventListener('click', toggleLoop);
     }
 
-    // Timeline Track Click to Seek
-    if (timelineTrack) {
-        timelineTrack.addEventListener('click', (e) => {
+    // Unified Scrubber Click + Drag Helper (for both NLE Timeline Bar & In-Player Scrubber)
+    function bindScrubberDrag(trackElement) {
+        if (!trackElement) return;
+
+        const computeTargetSec = (clientX) => {
             const dur = getEffectiveDuration();
-            if (!nativePlayer || !dur) return;
-            const rect = timelineTrack.getBoundingClientRect();
-            const clickX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+            if (!dur || dur <= 0) return null;
+            const rect = trackElement.getBoundingClientRect();
+            if (!rect.width) return null;
+            const clickX = Math.max(0, Math.min(rect.width, clientX - rect.left));
             const pct = clickX / rect.width;
-            const targetSec = pct * dur;
-            nativePlayer.currentTime = targetSec;
-            if (nativeAudio && hasSeparateAudio) {
-                try { nativeAudio.currentTime = targetSec; } catch (err) {}
+            return pct * dur;
+        };
+
+        trackElement.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            e.stopPropagation();
+
+            const initialSec = computeTargetSec(e.clientX);
+            if (initialSec === null) return;
+
+            isScrubbingTimeline = true;
+            let lastDragSec = initialSec;
+            seekVideoTo(initialSec, true);
+
+            const onMouseMove = (moveEvt) => {
+                if (!isScrubbingTimeline) return;
+                const moveSec = computeTargetSec(moveEvt.clientX);
+                if (moveSec !== null) {
+                    lastDragSec = moveSec;
+                    seekVideoTo(moveSec, true);
+                }
+            };
+
+            const onMouseUp = (upEvt) => {
+                window.removeEventListener('mousemove', onMouseMove);
+                window.removeEventListener('mouseup', onMouseUp);
+                if (!isScrubbingTimeline) return;
+                isScrubbingTimeline = false;
+                const finalSec = computeTargetSec(upEvt.clientX);
+                seekVideoTo(finalSec !== null ? finalSec : lastDragSec, false);
+            };
+
+            window.addEventListener('mousemove', onMouseMove);
+            window.addEventListener('mouseup', onMouseUp);
+        });
+    }
+
+    bindScrubberDrag(timelineTrack);
+    bindScrubberDrag(vcScrubberWrap);
+
+    function toggleVideoPlayPause() {
+        if (!nativePlayer) return;
+        if (nativePlayer.paused) {
+            const p = nativePlayer.play();
+            if (p && typeof p.catch === 'function') p.catch(() => {});
+            showOsd('▶ Play');
+        } else {
+            nativePlayer.pause();
+            if (nativeAudio && hasSeparateAudio) nativeAudio.pause();
+            showOsd('⏸️ Pause');
+        }
+    }
+
+    if (vcBtnPlayPause) {
+        vcBtnPlayPause.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleVideoPlayPause();
+        });
+    }
+
+    if (vcBtnFullscreen) {
+        vcBtnFullscreen.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (!nativePlayer) return;
+            const targetEl = playerStage || nativePlayer;
+            if (document.fullscreenElement) {
+                document.exitFullscreen().catch(() => {});
+            } else if (targetEl.requestFullscreen) {
+                targetEl.requestFullscreen().catch(() => {});
+            }
+        });
+    }
+
+    if (nativePlayer) {
+        nativePlayer.addEventListener('click', () => {
+            // When custom controls are active (MP4 HD Pro), clicking video surface toggles Play/Pause like YouTube
+            if (isCurrentStreamTranscodeMp4) {
+                toggleVideoPlayPause();
             }
         });
     }
@@ -2663,15 +2938,14 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         } else if (e.key === 'j' || e.key === 'J' || e.key === 'ArrowLeft') {
             e.preventDefault();
             if (nativePlayer) {
-                nativePlayer.currentTime = Math.max(0, nativePlayer.currentTime - 5);
-                if (nativeAudio && hasSeparateAudio) nativeAudio.currentTime = nativePlayer.currentTime;
+                seekVideoTo(Math.max(0, getEffectiveCurrentTime() - 5), false);
                 showOsd('⏪ -5s');
             }
         } else if (e.key === 'ArrowRight') {
             e.preventDefault();
             if (nativePlayer) {
-                nativePlayer.currentTime = Math.min((nativePlayer.duration || Infinity), nativePlayer.currentTime + 5);
-                if (nativeAudio && hasSeparateAudio) nativeAudio.currentTime = nativePlayer.currentTime;
+                const dur = getEffectiveDuration() || Infinity;
+                seekVideoTo(Math.min(dur, getEffectiveCurrentTime() + 5), false);
                 showOsd('⏩ +5s');
             }
         } else if (e.key === 'ArrowUp') {
