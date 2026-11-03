@@ -3063,6 +3063,13 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
             updatePlatformBadge(url);
         }
 
+        if (formatSelect && currentQuality && currentQuality !== 'auto') {
+            const matchingOpt = formatSelect.querySelector(`option[value="${currentQuality}"]`);
+            if (matchingOpt) {
+                formatSelect.value = currentQuality;
+            }
+        }
+
         if (customStartSec !== null || customEndSec !== null) {
             preserveCustomSegment = true;
             const sSec = customStartSec !== null ? Math.floor(customStartSec) : 0;
@@ -3382,12 +3389,17 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         const { ytDlpPath } = resolveDownloaderBinaries();
         appendLog(`Memulai analisis URL: ${url}`);
 
+        const isYouTubeUrl = /youtube\.com|youtu\.be/i.test(url);
         const args = [
             '-J',
-            '--no-playlist',
-            '--user-agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-            url
+            '--no-playlist'
         ];
+        if (isYouTubeUrl) {
+            args.push('--extractor-args', 'youtube:player_client=default,-tv_samsung');
+        } else {
+            args.push('--user-agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36');
+        }
+        args.push(url);
 
         if (checkCookies && checkCookies.checked) {
             args.splice(1, 0, '--cookies-from-browser', 'safari');
@@ -3452,6 +3464,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                     appendLog(`Resolusi terdeteksi: ${heights.length ? heights.join(', ') + 'p' : 'Default Stream'}`);
 
                     if (formatSelect) {
+                        const prevSelectedVal = formatSelect.value || 'best_video';
                         formatSelect.innerHTML = '';
                         const platform = getPlatformInfo(url).name;
 
@@ -3476,9 +3489,6 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                                 else label = `Low (${h}p H.264)`;
 
                                 opt.textContent = label;
-                                if (h === 1080 || (topRes < 1080 && h === topRes)) {
-                                    opt.selected = true;
-                                }
                                 formatSelect.appendChild(opt);
                             });
                         } else {
@@ -3498,6 +3508,10 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                         wavOpt.value = 'wav';
                         wavOpt.textContent = '🎵 Audio Saja (WAV Lossless)';
                         formatSelect.appendChild(wavOpt);
+
+                        // Preserve user's selected resolution if available on this video; otherwise select 'best_video' (topRes)
+                        const hasPrevOption = Array.from(formatSelect.options).some(o => o.value === prevSelectedVal);
+                        formatSelect.value = hasPrevOption ? prevSelectedVal : 'best_video';
                     }
 
                     if (detectStatus) {
@@ -3850,7 +3864,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         const ffmpegArgs = ['-y', '-i', filePath];
 
         if (!isH264) {
-            ffmpegArgs.push('-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p');
+            ffmpegArgs.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-pix_fmt', 'yuv420p');
         } else {
             ffmpegArgs.push('-c:v', 'copy');
         }
@@ -3971,32 +3985,63 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         appendLog(`Menggunakan yt-dlp: ${ytDlpPath}`);
         appendLog(`Target folder: ${currentTargetFolder}`);
 
+        const isAudioOnly = (formatChoice === 'mp3' || formatChoice === 'wav');
+        const outputTemplate = isAudioOnly
+            ? path.join(currentTargetFolder, '%(title)s [%(id)s].%(ext)s')
+            : path.join(currentTargetFolder, '%(title)s [%(id)s] [%(height)sp].%(ext)s');
+
+        const isYouTubeUrl = /youtube\.com|youtu\.be/i.test(url);
         const args = [
             '--no-playlist',
             '--newline',
+            '--force-overwrites',
             '--print', 'after_move:filepath',
-            '--ffmpeg-location', ffmpegPath,
-            '--user-agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-            '-o', path.join(currentTargetFolder, '%(title)s [%(id)s].%(ext)s'),
-            url
+            '--ffmpeg-location', ffmpegPath
         ];
+
+        if (isYouTubeUrl) {
+            args.push('--extractor-args', 'youtube:player_client=default,-tv_samsung');
+        } else {
+            args.push('--user-agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36');
+        }
+
+        args.push('-o', outputTemplate, url);
 
         if (checkCookies && checkCookies.checked) {
             args.splice(1, 0, '--cookies-from-browser', 'safari');
         }
 
         if (formatChoice === 'best_video') {
-            args.splice(1, 0, '-S', 'vcodec:h264,res,acodec:m4a');
+            args.splice(
+                1,
+                0,
+                '-f', 'bestvideo+bestaudio/best',
+                '-S', 'res,vcodec:h264,vcodec:vp9,acodec:m4a',
+                '--merge-output-format', 'mp4'
+            );
+            appendLog('Target resolusi: Kualitas Terbaik (Resolusi Tertinggi 4K/2K/1080p)');
         } else if (formatChoice === 'mp3') {
             args.splice(1, 0, '-x', '--audio-format', 'mp3', '--audio-quality', '0');
         } else if (formatChoice === 'wav') {
             args.splice(1, 0, '-x', '--audio-format', 'wav');
         } else if (!isNaN(Number(formatChoice))) {
             const h = Number(formatChoice);
-            args.splice(1, 0, '-S', `res:${h},vcodec:h264,acodec:m4a`);
-            appendLog(`Target resolusi: ${h}p (Prioritas: Codec H.264 & AAC)`);
+            args.splice(
+                1,
+                0,
+                '-f', `bestvideo[height<=${h}]+bestaudio/best[height<=${h}]/best`,
+                '-S', `res:${h},vcodec:h264,vcodec:vp9,acodec:m4a`,
+                '--merge-output-format', 'mp4'
+            );
+            appendLog(`Target resolusi: ${h}p (Prioritas: Resolusi ${h}p -> H.264 & AAC MP4)`);
         } else {
-            args.splice(1, 0, '-S', 'vcodec:h264,res,acodec:m4a');
+            args.splice(
+                1,
+                0,
+                '-f', 'bestvideo+bestaudio/best',
+                '-S', 'res,vcodec:h264,vcodec:vp9,acodec:m4a',
+                '--merge-output-format', 'mp4'
+            );
         }
 
         if (useSegment && startVal && endVal) {
