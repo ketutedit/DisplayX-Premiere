@@ -205,15 +205,15 @@
                 return forwardRangeRequest(entry, clientReq, clientRes, redirectCount + 1, retryCount);
             }
 
-            // If a redirected edge URL returned 403/5xx, fallback to original entry.url and retry
-            if ((upstreamRes.statusCode >= 500 || (upstreamRes.statusCode === 403 && entry.currentUrl)) && retryCount < 2 && !isClientClosed) {
+            // If a redirected edge URL or transient upstream check returned 403/5xx, retry cleanly
+            if ((upstreamRes.statusCode >= 500 || upstreamRes.statusCode === 403) && retryCount < 3 && !isClientClosed) {
                 upstreamRes.resume();
                 entry.currentUrl = null;
                 return setTimeout(() => {
                     if (!isClientClosed && !clientRes.headersSent) {
                         forwardRangeRequest(entry, clientReq, clientRes, 0, retryCount + 1);
                     }
-                }, 120);
+                }, 250);
             }
 
             const resHeaders = {
@@ -319,8 +319,8 @@
         }
     }
 
-    // Real-Time In-Memory MP4 (H.264/avc1) -> WebM (VP8) RAM Stream Engine with 206 Byte-Range & Time-Offset Scrubbing
-    function serveTranscodedMp4AsWebm(entry, clientReq, clientRes, startOffsetParam = '0') {
+    // Real-Time In-Memory MP4 (H.264/avc1) -> WebM (VP8) RAM Stream Engine with Progressive 200 OK & Fast -ss Seeking
+    function serveTranscodedMp4AsWebm(entry, clientReq, clientRes, startOffsetParam = '0', tokenParam = '') {
         if (!cp) {
             clientRes.writeHead(500);
             return clientRes.end("child_process unavailable");
@@ -328,10 +328,10 @@
 
         const startSec = Math.max(0, parseFloat(startOffsetParam) || 0);
         const baseKey = entry.sessionKey || entry.rawSourceKey || entry.url;
-        const sessionKey = `${baseKey}_s_${startSec.toFixed(1)}`;
+        const sessionKey = `${baseKey}_s_${startSec.toFixed(2)}_${tokenParam}`;
         let session = rootGlobal.__ardaneActiveTranscodeSession;
 
-        if (!session || session.key !== sessionKey || (session.error && session.chunks.length === 0)) {
+        if (!session || session.key !== sessionKey || session.error || session.totalBytes > 4 * 1024 * 1024) {
             cleanupActiveTranscodeSession(null);
 
             const ffmpegBin = resolveFfmpeg();
@@ -339,9 +339,11 @@
             const targetBitrate = (entry.height >= 1080) ? '3200k' : (entry.height >= 720 ? '2200k' : '1400k');
 
             const ffArgs = [
-                '-hide_banner', '-loglevel', 'error'
+                '-hide_banner', '-loglevel', 'error',
+                '-probesize', '327680',
+                '-analyzeduration', '500000'
             ];
-            if (startSec > 0.2) {
+            if (startSec > 0.1) {
                 ffArgs.push('-ss', startSec.toFixed(2));
             }
             ffArgs.push(
@@ -373,7 +375,7 @@
             };
             rootGlobal.__ardaneActiveTranscodeSession = session;
 
-            const MAX_RAM_BUFFER_BYTES = 180 * 1024 * 1024; // Cap in-memory cache per video at 180MB
+            const MAX_INITIAL_CACHE_BYTES = 8 * 1024 * 1024; // Keep first 8MB for any immediate duplicate probe
 
             ffProc.stdout.on('data', (chunk) => {
                 if (session.isFirstChunk) {
@@ -381,10 +383,10 @@
                     const remainingDur = Math.max(1, (entry.duration || 0) - startSec);
                     chunk = injectWebmDuration(chunk, remainingDur);
                 }
-                if (session.totalBytes + chunk.length <= MAX_RAM_BUFFER_BYTES) {
+                if (session.totalBytes + chunk.length <= MAX_INITIAL_CACHE_BYTES) {
                     session.chunks.push(chunk);
-                    session.totalBytes += chunk.length;
                 }
+                session.totalBytes += chunk.length;
                 for (const resClient of session.clients) {
                     try {
                         resClient.write(chunk);
@@ -397,7 +399,7 @@
             ffProc.on('close', (code) => {
                 session.proc = null;
                 session.done = true;
-                if (code !== 0 && session.chunks.length === 0) {
+                if (code !== 0 && session.totalBytes === 0) {
                     session.error = true;
                 }
                 for (const resClient of session.clients) {
@@ -416,47 +418,19 @@
             });
         }
 
-        let startByte = 0;
-        if (clientReq.headers && clientReq.headers['range']) {
-            const m = clientReq.headers['range'].match(/bytes=(\d+)-/);
-            if (m) {
-                startByte = parseInt(m[1], 10) || 0;
-            }
-        }
-
-        const virtualTotal = session.done
-            ? Math.max(session.totalBytes, startByte + 1)
-            : Math.max(session.totalBytes + 25 * 1024 * 1024, 180 * 1024 * 1024);
-
-        clientRes.writeHead(206, {
+        // Send 200 OK progressive WebM stream so when FFmpeg reaches EOF near the end of the video (e.g. minute 16),
+        // Chromium cleanly plays until the final frame without triggering 206 Content-Range mismatch stalls.
+        clientRes.writeHead(200, {
             "Content-Type": "video/webm",
-            "Accept-Ranges": "bytes",
-            "Content-Range": `bytes ${startByte}-${virtualTotal - 1}/${virtualTotal}`,
             "Access-Control-Allow-Origin": "*",
             "Cache-Control": "no-store"
         });
 
-        if (startByte === 0) {
-            for (const existingChunk of session.chunks) {
-                try {
-                    clientRes.write(existingChunk);
-                } catch (e) {
-                    return;
-                }
-            }
-        } else if (startByte < session.totalBytes) {
-            let offset = 0;
-            for (const existingChunk of session.chunks) {
-                const nextOffset = offset + existingChunk.length;
-                if (nextOffset > startByte) {
-                    const sliceStart = Math.max(0, startByte - offset);
-                    try {
-                        clientRes.write(existingChunk.slice(sliceStart));
-                    } catch (e) {
-                        return;
-                    }
-                }
-                offset = nextOffset;
+        for (const existingChunk of session.chunks) {
+            try {
+                clientRes.write(existingChunk);
+            } catch (e) {
+                return;
             }
         }
 
@@ -548,11 +522,12 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                 // RefTube Pro In-Memory Stream Key (Direct WebM VP9 Video / Opus Audio in RAM)
                 const key = parsed.searchParams.get('key');
                 const startParam = parsed.searchParams.get('start') || '0';
+                const tokenParam = parsed.searchParams.get('t') || '';
                 const activeRegistry = rootGlobal.__ardaneStreamRegistry || streamRegistry;
                 if (key && activeRegistry[key]) {
                     const entry = activeRegistry[key];
                     if (entry.isTranscodeMp4) {
-                        return serveTranscodedMp4AsWebm(entry, req, res, startParam);
+                        return serveTranscodedMp4AsWebm(entry, req, res, startParam, tokenParam);
                     }
                     return forwardRangeRequest(entry, req, res, 0, 0);
                 }
@@ -931,7 +906,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     function seekVideoTo(targetSec, isLiveDrag = false) {
         if (!nativePlayer) return;
         const dur = getEffectiveDuration();
-        const maxSeek = dur > 0 ? Math.max(0, dur - 0.15) : Math.max(0, targetSec);
+        const maxSeek = dur > 0 ? Math.max(0, dur - 0.25) : Math.max(0, targetSec);
         const clamped = Math.max(0, Math.min(maxSeek, targetSec));
 
         updatePlayheadUI(clamped, dur);
@@ -948,37 +923,25 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         }
 
         // MP4 HD Pro Transcode stream:
-        // Case A: Target is within the already-buffered RAM range -> 0ms instant native seek!
-        const relSec = clamped - transcodeTimeOffset;
-        let maxBufferedRel = 0;
-        try {
-            if (nativePlayer.buffered && nativePlayer.buffered.length > 0) {
-                maxBufferedRel = nativePlayer.buffered.end(nativePlayer.buffered.length - 1);
-            }
-        } catch (e) {}
-
-        if (relSec >= 0 && relSec <= maxBufferedRel + 2.5) {
-            try {
-                nativePlayer.currentTime = relSec;
-                if (nativeAudio && hasSeparateAudio) {
-                    nativeAudio.currentTime = clamped;
-                }
-            } catch (e) {}
-            return;
-        }
-
-        // If user is still dragging mouse across unbuffered territory, update visual scrubber only until mouseup
+        // While user is actively dragging mouse across the scrubber bar, update visual playhead smoothly until mouseup
         if (isLiveDrag) {
             return;
         }
 
-        // Case B: Target is beyond current RAM buffer (or before current offset) -> Fast FFmpeg -ss jump (< 1s)
+        // Perform fast FFmpeg -ss jump (~200-350ms) for both forward and backward seeks so cue-less WebM never stalls
         if (!activeTranscodeVKey) return;
-        const wasPaused = nativePlayer.paused;
+        const wasPaused = nativePlayer.paused && !nativePlayer.ended;
         transcodeTimeOffset = clamped;
         const loadToken = ++activeStreamLoadToken;
 
-        showOsd(`⏩ Melompat ke ${formatShortTime(clamped)}`);
+        if (nativeAudio && hasSeparateAudio) {
+            try {
+                nativeAudio.pause();
+                nativeAudio.currentTime = clamped;
+            } catch (e) {}
+        }
+
+        showOsd(`⏩ ${formatShortTime(clamped)}`);
 
         const seekStreamUrl = `http://127.0.0.1:${PLAYER_PORT}/stream?key=${encodeURIComponent(activeTranscodeVKey)}&start=${clamped.toFixed(2)}&t=${Date.now()}`;
 
@@ -1003,10 +966,6 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
         nativePlayer.onloadedmetadata = onSeekStreamReady;
         nativePlayer.oncanplay = onSeekStreamReady;
-
-        if (nativeAudio && hasSeparateAudio) {
-            try { nativeAudio.currentTime = clamped; } catch (e) {}
-        }
 
         nativePlayer.src = seekStreamUrl;
         nativePlayer.load();
@@ -1139,15 +1098,16 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
         const vTime = getEffectiveCurrentTime();
         const aTime = nativeAudio.currentTime || 0;
-        if (forceSeek || Math.abs(vTime - aTime) > 0.08) {
+        if (forceSeek || Math.abs(vTime - aTime) > 0.12) {
             try {
                 nativeAudio.currentTime = vTime;
             } catch (e) {}
         }
 
-        if (!nativePlayer.paused && nativeAudio.paused && nativePlayer.readyState >= 2) {
+        const isVideoActivelyPlaying = !nativePlayer.paused && !nativePlayer.seeking && !nativePlayer.ended && nativePlayer.readyState >= 3;
+        if (isVideoActivelyPlaying && nativeAudio.paused) {
             nativeAudio.play().catch(() => {});
-        } else if (nativePlayer.paused && !nativeAudio.paused) {
+        } else if (!isVideoActivelyPlaying && !nativeAudio.paused) {
             nativeAudio.pause();
         }
     }
@@ -1322,7 +1282,13 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         showPlayerLoading(isAutoRefetch ? 'Menyegarkan tautan stream video...' : 'Menghubungkan stream video Pro (1080p–4K)...');
 
         const ytDlp = resolveYtDlp();
-        const args = ['--no-playlist', '--no-warnings', '-J', `https://www.youtube.com/watch?v=${videoId}`];
+        const args = [
+            '--no-playlist',
+            '--no-warnings',
+            '--extractor-args', 'youtube:player_client=default,-tv_samsung',
+            '-J',
+            `https://www.youtube.com/watch?v=${videoId}`
+        ];
         const env = getProcessEnv();
 
         const proc = cp.spawn(ytDlp, args, { env });
@@ -2638,6 +2604,23 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     function toggleVideoPlayPause() {
         if (!nativePlayer) return;
         if (nativePlayer.paused) {
+            const dur = getEffectiveDuration();
+            const cur = getEffectiveCurrentTime();
+            if (nativePlayer.ended || (dur > 0 && cur >= dur - 0.4)) {
+                const restartTime = (loopIn !== null) ? loopIn : 0;
+                seekVideoTo(restartTime, false);
+                const p = nativePlayer.play();
+                if (p && typeof p.catch === 'function') p.catch(() => {});
+                showOsd('▶ Play');
+                return;
+            }
+            if (isCurrentStreamTranscodeMp4 && (nativePlayer.readyState < 2 || nativePlayer.error)) {
+                seekVideoTo(cur, false);
+                const p = nativePlayer.play();
+                if (p && typeof p.catch === 'function') p.catch(() => {});
+                showOsd('▶ Play');
+                return;
+            }
             const p = nativePlayer.play();
             if (p && typeof p.catch === 'function') p.catch(() => {});
             showOsd('▶ Play');
@@ -2924,17 +2907,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
             stepFrame(true, e.shiftKey ? 10 : 1);
         } else if (e.key === ' ' || e.code === 'Space' || e.key === 'k' || e.key === 'K') {
             e.preventDefault();
-            if (nativePlayer) {
-                if (nativePlayer.paused) {
-                    const p = nativePlayer.play();
-                    if (p && typeof p.catch === 'function') p.catch(() => {});
-                    showOsd('▶ Play');
-                } else {
-                    nativePlayer.pause();
-                    if (nativeAudio && hasSeparateAudio) nativeAudio.pause();
-                    showOsd('⏸️ Pause');
-                }
-            }
+            toggleVideoPlayPause();
         } else if (e.key === 'j' || e.key === 'J' || e.key === 'ArrowLeft') {
             e.preventDefault();
             if (nativePlayer) {
