@@ -658,7 +658,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     const playerLoadingText = document.getElementById('playerLoadingText');
     const playerPlaceholder = document.getElementById('playerPlaceholder');
 
-    // Custom In-Player Scrubber Controls (Active on MP4 HD Pro streams)
+    // Custom In-Player Scrubber Controls (Active on MP4 HD Pro streams & Zoom Mode)
     const customVideoControls = document.getElementById('customVideoControls');
     const vcScrubberWrap = document.getElementById('vcScrubberWrap');
     const vcScrubberBuffered = document.getElementById('vcScrubberBuffered');
@@ -667,6 +667,17 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     const vcBtnPlayPause = document.getElementById('vcBtnPlayPause');
     const vcTimeText = document.getElementById('vcTimeText');
     const vcBtnFullscreen = document.getElementById('vcBtnFullscreen');
+
+    // Premiere Pro Style Video Zoom & Pan Elements
+    const btnZoom = document.getElementById('btnZoom');
+    const zoomMenu = document.getElementById('zoomMenu');
+    const currentZoomLabel = document.getElementById('currentZoomLabel');
+    const zoomResetBadge = document.getElementById('zoomResetBadge');
+    const zoomResetBadgeText = document.getElementById('zoomResetBadgeText');
+    const panScrollbarH = document.getElementById('panScrollbarH');
+    const panThumbH = document.getElementById('panThumbH');
+    const panScrollbarV = document.getElementById('panScrollbarV');
+    const panThumbV = document.getElementById('panThumbV');
 
     // Timeline Bar Elements
     const timelineBar = document.getElementById('timelineBar');
@@ -749,6 +760,12 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     let transcodeTimeOffset = 0;
     let activeTranscodeVKey = '';
     let isScrubbingTimeline = false;
+
+    // Premiere Pro Program Monitor Style Zoom & Pan State
+    let currentZoomScale = 1; // 1 = Fit (100%), up to 4 (400%)
+    let currentPanNormX = 0.5; // 0 = far left, 0.5 = center, 1 = far right
+    let currentPanNormY = 0.5; // 0 = top, 0.5 = center, 1 = bottom
+    let suppressNextVideoClick = false;
 
     // Loop & In/Out Range State (Premiere Pro NLE Style)
     let isLooping = true; // Enabled by default for reference reviewing
@@ -1477,17 +1494,19 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         activeTranscodeVKey = vKey;
         transcodeTimeOffset = (isCurrentStreamTranscodeMp4 && preserveTimeSec && preserveTimeSec > 0) ? preserveTimeSec : 0;
 
-        // Toggle custom in-player scrubber controls for MP4 HD Pro streams so playhead is 100% draggable across full duration
+        // Toggle custom in-player scrubber controls for MP4 HD Pro streams or when Zoomed In so controls stay crisp at 100% scale
+        const useCustomOverlayControls = Boolean(isCurrentStreamTranscodeMp4 || currentZoomScale > 1.001);
         if (nativePlayer) {
-            nativePlayer.controls = !isCurrentStreamTranscodeMp4;
+            nativePlayer.controls = !useCustomOverlayControls;
         }
         if (customVideoControls) {
-            customVideoControls.style.display = isCurrentStreamTranscodeMp4 ? 'flex' : 'none';
+            customVideoControls.style.display = useCustomOverlayControls ? 'flex' : 'none';
         }
         if (vcScrubberBuffered) {
             vcScrubberBuffered.style.width = '0%';
         }
         updatePlayheadUI(preserveTimeSec || 0, metadata.duration || 0);
+        updateVideoZoomAndPan();
 
         if (chosenVideo.isTranscodeMp4) {
             const rawSourceKey = `raw_${vKey}`;
@@ -2679,13 +2698,313 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     }
 
     if (nativePlayer) {
-        nativePlayer.addEventListener('click', () => {
-            // When custom controls are active (MP4 HD Pro), clicking video surface toggles Play/Pause like YouTube
-            if (isCurrentStreamTranscodeMp4) {
+        nativePlayer.addEventListener('click', (e) => {
+            if (suppressNextVideoClick) {
+                suppressNextVideoClick = false;
+                e.preventDefault();
+                e.stopPropagation();
+                return;
+            }
+            // When custom controls are active (MP4 HD Pro or Zoom Mode), clicking video surface toggles Play/Pause like YouTube
+            if (isCurrentStreamTranscodeMp4 || currentZoomScale > 1.001) {
                 toggleVideoPlayPause();
             }
         });
     }
+
+    // ==========================================================================
+    // PREMIERE PRO PROGRAM MONITOR STYLE VIDEO ZOOM & PAN (LEFT/RIGHT, UP/DOWN)
+    // ==========================================================================
+    function syncZoomDropdownHighlight(scaleVal) {
+        if (!zoomMenu) return;
+        zoomMenu.querySelectorAll('.dx-dropdown-item').forEach(item => {
+            const z = parseFloat(item.getAttribute('data-zoom') || '1');
+            item.classList.toggle('active', Math.abs(z - scaleVal) < 0.04);
+        });
+    }
+
+    function updateVideoZoomAndPan() {
+        if (!nativePlayer || !playerStage) return;
+
+        if (currentZoomScale <= 1.005) {
+            currentZoomScale = 1;
+            currentPanNormX = 0.5;
+            currentPanNormY = 0.5;
+
+            playerStage.classList.remove('is-zoomed', 'is-panning');
+            nativePlayer.style.transform = '';
+
+            if (panScrollbarH) panScrollbarH.style.display = 'none';
+            if (panScrollbarV) panScrollbarV.style.display = 'none';
+            if (zoomResetBadge) zoomResetBadge.style.display = 'none';
+            if (currentZoomLabel) currentZoomLabel.textContent = 'Fit';
+            if (btnZoom) btnZoom.classList.remove('active');
+            syncZoomDropdownHighlight(1);
+
+            if (currentVideo && nativePlayer.style.display !== 'none') {
+                nativePlayer.controls = !isCurrentStreamTranscodeMp4;
+                if (customVideoControls) {
+                    customVideoControls.style.display = isCurrentStreamTranscodeMp4 ? 'flex' : 'none';
+                }
+            }
+            return;
+        }
+
+        currentZoomScale = Math.max(1, Math.min(4, currentZoomScale));
+        currentPanNormX = Math.max(0, Math.min(1, currentPanNormX));
+        currentPanNormY = Math.max(0, Math.min(1, currentPanNormY));
+
+        playerStage.classList.add('is-zoomed');
+
+        const stageW = playerStage.clientWidth || 480;
+        const stageH = playerStage.clientHeight || 270;
+        const maxPanX = ((currentZoomScale - 1) * stageW) / 2;
+        const maxPanY = ((currentZoomScale - 1) * stageH) / 2;
+
+        // normX: 0 = left edge (+maxPanX), 0.5 = center (0), 1 = right edge (-maxPanX)
+        // normY: 0 = top edge (+maxPanY), 0.5 = center (0), 1 = bottom edge (-maxPanY)
+        const panX = (0.5 - currentPanNormX) * 2 * maxPanX;
+        const panY = (0.5 - currentPanNormY) * 2 * maxPanY;
+
+        nativePlayer.style.transformOrigin = 'center center';
+        nativePlayer.style.transform = `translate3d(${panX.toFixed(1)}px, ${panY.toFixed(1)}px, 0) scale(${currentZoomScale.toFixed(3)})`;
+
+        // Keep bottom controls at 100% crisp scale (not magnified with the video element)
+        if (currentVideo && nativePlayer.style.display !== 'none') {
+            nativePlayer.controls = false;
+            if (customVideoControls) {
+                customVideoControls.style.display = 'flex';
+            }
+        }
+
+        const pctText = `${Math.round(currentZoomScale * 100)}%`;
+        if (currentZoomLabel) currentZoomLabel.textContent = pctText;
+        if (btnZoom) btnZoom.classList.add('active');
+        if (zoomResetBadge) {
+            zoomResetBadge.style.display = 'inline-flex';
+            if (zoomResetBadgeText) zoomResetBadgeText.textContent = `🔍 ${pctText}`;
+        }
+        syncZoomDropdownHighlight(currentZoomScale);
+
+        // Update Premiere Pro Style Horizontal & Vertical Pan Scrollbars
+        const thumbFraction = Math.max(0.15, Math.min(1, 1 / currentZoomScale));
+        const thumbPct = thumbFraction * 100;
+        const maxOffsetPct = 100 - thumbPct;
+
+        if (panScrollbarH && panThumbH) {
+            panScrollbarH.style.display = 'block';
+            panThumbH.style.width = `${thumbPct.toFixed(2)}%`;
+            panThumbH.style.left = `${(currentPanNormX * maxOffsetPct).toFixed(2)}%`;
+        }
+        if (panScrollbarV && panThumbV) {
+            panScrollbarV.style.display = 'block';
+            panThumbV.style.height = `${thumbPct.toFixed(2)}%`;
+            panThumbV.style.top = `${(currentPanNormY * maxOffsetPct).toFixed(2)}%`;
+        }
+    }
+
+    function setVideoZoom(newScale, showFeedback = true) {
+        const clamped = Math.max(1, Math.min(4, Number(newScale) || 1));
+        if (clamped <= 1.005) {
+            currentZoomScale = 1;
+            currentPanNormX = 0.5;
+            currentPanNormY = 0.5;
+            updateVideoZoomAndPan();
+            if (showFeedback) showOsd('🖥️ Zoom: Fit (100%)');
+        } else {
+            currentZoomScale = clamped;
+            updateVideoZoomAndPan();
+            if (showFeedback) showOsd(`🔍 Zoom: ${Math.round(currentZoomScale * 100)}% (Drag untuk Geser)`);
+        }
+    }
+
+    // 1. Direct Drag Panning on Video Canvas (Hand Tool) when Zoomed In
+    if (nativePlayer && playerStage) {
+        nativePlayer.addEventListener('mousedown', (e) => {
+            if (e.button !== 0 || currentZoomScale <= 1.005) return;
+            e.preventDefault();
+
+            const startX = e.clientX;
+            const startY = e.clientY;
+            const startNormX = currentPanNormX;
+            const startNormY = currentPanNormY;
+            const stageW = playerStage.clientWidth || 480;
+            const stageH = playerStage.clientHeight || 270;
+            const maxPanX = Math.max(1, ((currentZoomScale - 1) * stageW) / 2);
+            const maxPanY = Math.max(1, ((currentZoomScale - 1) * stageH) / 2);
+            let movedDist = 0;
+
+            playerStage.classList.add('is-panning');
+
+            const onMove = (moveEvt) => {
+                const dx = moveEvt.clientX - startX;
+                const dy = moveEvt.clientY - startY;
+                movedDist = Math.max(movedDist, Math.hypot(dx, dy));
+
+                // Dragging right (dx > 0) moves view towards left edge (normX decreases)
+                currentPanNormX = Math.max(0, Math.min(1, startNormX - (dx / (2 * maxPanX))));
+                currentPanNormY = Math.max(0, Math.min(1, startNormY - (dy / (2 * maxPanY))));
+                updateVideoZoomAndPan();
+            };
+
+            const onUp = () => {
+                window.removeEventListener('mousemove', onMove);
+                window.removeEventListener('mouseup', onUp);
+                playerStage.classList.remove('is-panning');
+                if (movedDist > 4) {
+                    suppressNextVideoClick = true;
+                    setTimeout(() => { suppressNextVideoClick = false; }, 120);
+                }
+            };
+
+            window.addEventListener('mousemove', onMove);
+            window.addEventListener('mouseup', onUp);
+        });
+
+        // Double-click zoomed video to reset back to Fit (100%)
+        nativePlayer.addEventListener('dblclick', (e) => {
+            if (currentZoomScale > 1.005) {
+                e.preventDefault();
+                e.stopPropagation();
+                setVideoZoom(1, true);
+            }
+        });
+    }
+
+    // 2. Premiere Pro Style Horizontal & Vertical Scrollbar Dragging
+    if (panScrollbarH && panThumbH) {
+        panScrollbarH.addEventListener('mousedown', (e) => {
+            if (e.button !== 0 || currentZoomScale <= 1.005) return;
+            e.preventDefault();
+            e.stopPropagation();
+
+            const rect = panScrollbarH.getBoundingClientRect();
+            const thumbFraction = Math.max(0.15, Math.min(1, 1 / currentZoomScale));
+            const usableTrackW = Math.max(1, rect.width * (1 - thumbFraction));
+            const thumbW = rect.width * thumbFraction;
+
+            const isThumbClick = (e.target === panThumbH);
+            const startX = e.clientX;
+            let startNormX = currentPanNormX;
+
+            if (!isThumbClick) {
+                const clickRel = e.clientX - rect.left - (thumbW / 2);
+                startNormX = Math.max(0, Math.min(1, clickRel / usableTrackW));
+                currentPanNormX = startNormX;
+                updateVideoZoomAndPan();
+            }
+
+            const onMove = (moveEvt) => {
+                const dx = moveEvt.clientX - startX;
+                currentPanNormX = Math.max(0, Math.min(1, startNormX + (dx / usableTrackW)));
+                updateVideoZoomAndPan();
+            };
+
+            const onUp = () => {
+                window.removeEventListener('mousemove', onMove);
+                window.removeEventListener('mouseup', onUp);
+            };
+
+            window.addEventListener('mousemove', onMove);
+            window.addEventListener('mouseup', onUp);
+        });
+    }
+
+    if (panScrollbarV && panThumbV) {
+        panScrollbarV.addEventListener('mousedown', (e) => {
+            if (e.button !== 0 || currentZoomScale <= 1.005) return;
+            e.preventDefault();
+            e.stopPropagation();
+
+            const rect = panScrollbarV.getBoundingClientRect();
+            const thumbFraction = Math.max(0.15, Math.min(1, 1 / currentZoomScale));
+            const usableTrackH = Math.max(1, rect.height * (1 - thumbFraction));
+            const thumbH = rect.height * thumbFraction;
+
+            const isThumbClick = (e.target === panThumbV);
+            const startY = e.clientY;
+            let startNormY = currentPanNormY;
+
+            if (!isThumbClick) {
+                const clickRel = e.clientY - rect.top - (thumbH / 2);
+                startNormY = Math.max(0, Math.min(1, clickRel / usableTrackH));
+                currentPanNormY = startNormY;
+                updateVideoZoomAndPan();
+            }
+
+            const onMove = (moveEvt) => {
+                const dy = moveEvt.clientY - startY;
+                currentPanNormY = Math.max(0, Math.min(1, startNormY + (dy / usableTrackH)));
+                updateVideoZoomAndPan();
+            };
+
+            const onUp = () => {
+                window.removeEventListener('mousemove', onMove);
+                window.removeEventListener('mouseup', onUp);
+            };
+
+            window.addEventListener('mousemove', onMove);
+            window.addEventListener('mouseup', onUp);
+        });
+    }
+
+    // 3. Mouse Wheel / Trackpad Zoom (Alt/Cmd/Ctrl + Scroll) & Two-Finger Pan when Zoomed In
+    if (playerStage) {
+        playerStage.addEventListener('wheel', (e) => {
+            if (!currentVideo || !nativePlayer || nativePlayer.style.display === 'none') return;
+
+            // Alt + Scroll or Cmd/Ctrl + Scroll (or Trackpad Pinch): Zoom In / Out
+            if (e.altKey || e.ctrlKey || e.metaKey) {
+                e.preventDefault();
+                e.stopPropagation();
+
+                const rect = playerStage.getBoundingClientRect();
+                const cursorRelX = rect.width > 0 ? Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)) : 0.5;
+                const cursorRelY = rect.height > 0 ? Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height)) : 0.5;
+
+                const zoomDelta = e.deltaY < 0 ? 0.25 : -0.25;
+                const nextScale = Math.max(1, Math.min(4, +(currentZoomScale + zoomDelta).toFixed(2)));
+
+                if (currentZoomScale <= 1.005 && nextScale > 1.005) {
+                    currentPanNormX = cursorRelX;
+                    currentPanNormY = cursorRelY;
+                }
+                setVideoZoom(nextScale, true);
+                return;
+            }
+
+            // When already zoomed in (> 100%), scrolling over the video pans left/right & up/down
+            if (currentZoomScale > 1.005) {
+                e.preventDefault();
+                e.stopPropagation();
+                const stageW = playerStage.clientWidth || 480;
+                const stageH = playerStage.clientHeight || 270;
+                const maxPanX = Math.max(1, ((currentZoomScale - 1) * stageW) / 2);
+                const maxPanY = Math.max(1, ((currentZoomScale - 1) * stageH) / 2);
+
+                const panDx = e.shiftKey && Math.abs(e.deltaX) < Math.abs(e.deltaY) ? e.deltaY : e.deltaX;
+                const panDy = e.shiftKey && Math.abs(e.deltaX) < Math.abs(e.deltaY) ? 0 : e.deltaY;
+
+                currentPanNormX = Math.max(0, Math.min(1, currentPanNormX + (panDx / (2 * maxPanX))));
+                currentPanNormY = Math.max(0, Math.min(1, currentPanNormY + (panDy / (2 * maxPanY))));
+                updateVideoZoomAndPan();
+            }
+        }, { passive: false });
+    }
+
+    if (zoomResetBadge) {
+        zoomResetBadge.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setVideoZoom(1, true);
+        });
+    }
+
+    window.addEventListener('resize', () => {
+        if (currentZoomScale > 1.005) {
+            updateVideoZoomAndPan();
+        }
+    });
 
     // ==========================================
     // BOX 1: DIRECT YOUTUBE LINK / PASTE STREAM
@@ -2859,6 +3178,18 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
             e.stopPropagation();
             const isOpen = qualityMenu && qualityMenu.style.display !== 'none';
             if (qualityMenu) qualityMenu.style.display = isOpen ? 'none' : 'block';
+            if (zoomMenu) zoomMenu.style.display = 'none';
+            if (speedMenu) speedMenu.style.display = 'none';
+        });
+    }
+
+    // Zoom Dropdown Menu Toggle
+    if (btnZoom) {
+        btnZoom.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isOpen = zoomMenu && zoomMenu.style.display !== 'none';
+            if (zoomMenu) zoomMenu.style.display = isOpen ? 'none' : 'block';
+            if (qualityMenu) qualityMenu.style.display = 'none';
             if (speedMenu) speedMenu.style.display = 'none';
         });
     }
@@ -2870,6 +3201,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
             const isOpen = speedMenu && speedMenu.style.display !== 'none';
             if (speedMenu) speedMenu.style.display = isOpen ? 'none' : 'block';
             if (qualityMenu) qualityMenu.style.display = 'none';
+            if (zoomMenu) zoomMenu.style.display = 'none';
         });
     }
 
@@ -2882,6 +3214,18 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                 const label = item.textContent.replace('✨', '').trim();
                 changeQuality(q, label);
                 qualityMenu.style.display = 'none';
+            });
+        });
+    }
+
+    // Zoom Menu Item Clicks
+    if (zoomMenu) {
+        zoomMenu.querySelectorAll('.dx-dropdown-item').forEach(item => {
+            item.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const z = parseFloat(item.getAttribute('data-zoom') || '1');
+                setVideoZoom(z, true);
+                zoomMenu.style.display = 'none';
             });
         });
     }
@@ -2902,6 +3246,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     // Close Dropdowns on Click Outside
     document.addEventListener('click', () => {
         if (qualityMenu) qualityMenu.style.display = 'none';
+        if (zoomMenu) zoomMenu.style.display = 'none';
         if (speedMenu) speedMenu.style.display = 'none';
     });
 
@@ -2957,6 +3302,15 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         } else if (e.key === 'm' || e.key === 'M') {
             e.preventDefault();
             toggleAudioMute();
+        } else if (e.key === '=' || e.key === '+') {
+            e.preventDefault();
+            setVideoZoom(Math.min(4, +(currentZoomScale + 0.25).toFixed(2)), true);
+        } else if (e.key === '-' || e.key === '_') {
+            e.preventDefault();
+            setVideoZoom(Math.max(1, +(currentZoomScale - 0.25).toFixed(2)), true);
+        } else if (e.key === '0' || e.key === '\\') {
+            e.preventDefault();
+            setVideoZoom(1, true);
         } else if (e.key === 'f' || e.key === 'F') {
             e.preventDefault();
             if (nativePlayer) {

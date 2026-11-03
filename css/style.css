@@ -192,6 +192,7 @@ body {
     background: #000;
     flex-shrink: 0;
     border-bottom: 1px solid #000;
+    overflow: hidden;
 }
 
 .dx-player-frame {
@@ -202,9 +203,115 @@ body {
     height: 100%;
     border: none;
     background: #000;
+    transform-origin: center center;
+    will-change: transform;
 }
 
-/* Custom In-Player Scrubber & Controls Overlay (HD Pro MP4 Mode) */
+.dx-player-stage.is-zoomed .dx-player-frame {
+    cursor: grab;
+}
+
+.dx-player-stage.is-panning .dx-player-frame {
+    cursor: grabbing;
+}
+
+/* Floating Zoom Badge & Quick Fit Reset Button */
+.dx-zoom-reset-badge {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    z-index: 6;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 9px;
+    border-radius: 5px;
+    background: rgba(15, 18, 25, 0.85);
+    border: 1px solid rgba(59, 130, 246, 0.55);
+    color: #93c5fd;
+    font-size: 10.5px;
+    font-weight: 700;
+    cursor: pointer;
+    backdrop-filter: blur(4px);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.55);
+    transition: background 0.15s ease, border-color 0.15s ease, transform 0.12s ease;
+    user-select: none;
+}
+
+.dx-zoom-reset-badge:hover {
+    background: rgba(37, 99, 235, 0.9);
+    border-color: #60a5fa;
+    color: #ffffff;
+}
+
+.dx-zoom-reset-sub {
+    font-weight: 500;
+    opacity: 0.9;
+    font-size: 10px;
+}
+
+/* Premiere Pro Program Monitor Style Horizontal & Vertical Pan Scrollbars */
+.dx-pan-scrollbar-h {
+    position: absolute;
+    left: 0;
+    right: 11px;
+    bottom: 0;
+    height: 11px;
+    background: rgba(14, 16, 22, 0.88);
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    z-index: 6;
+    cursor: pointer;
+    user-select: none;
+}
+
+.dx-pan-thumb-h {
+    position: absolute;
+    top: 2px;
+    bottom: 2px;
+    left: 25%;
+    width: 50%;
+    background: rgba(148, 163, 184, 0.55);
+    border-radius: 4px;
+    cursor: grab;
+    transition: background 0.12s ease;
+}
+
+.dx-pan-scrollbar-h:hover .dx-pan-thumb-h,
+.dx-pan-thumb-h:active {
+    background: rgba(226, 232, 240, 0.85);
+}
+
+.dx-pan-scrollbar-v {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 11px;
+    width: 11px;
+    background: rgba(14, 16, 22, 0.88);
+    border-left: 1px solid rgba(255, 255, 255, 0.1);
+    z-index: 6;
+    cursor: pointer;
+    user-select: none;
+}
+
+.dx-pan-thumb-v {
+    position: absolute;
+    left: 2px;
+    right: 2px;
+    top: 25%;
+    height: 50%;
+    background: rgba(148, 163, 184, 0.55);
+    border-radius: 4px;
+    cursor: grab;
+    transition: background 0.12s ease;
+}
+
+.dx-pan-scrollbar-v:hover .dx-pan-thumb-v,
+.dx-pan-thumb-v:active {
+    background: rgba(226, 232, 240, 0.85);
+}
+
+/* Custom In-Player Scrubber & Controls Overlay (HD Pro MP4 Mode & Zoom Mode) */
 .dx-custom-vcontrols {
     position: absolute;
     left: 0;
@@ -218,6 +325,11 @@ body {
     opacity: 0;
     transition: opacity 0.18s ease;
     user-select: none;
+}
+
+.dx-player-stage.is-zoomed .dx-custom-vcontrols {
+    right: 11px;
+    bottom: 11px;
 }
 
 .dx-player-stage:hover .dx-custom-vcontrols,

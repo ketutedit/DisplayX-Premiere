@@ -54,7 +54,23 @@
                 <video id="nativePlayer" class="dx-player-frame" controls playsinline autoplay style="display: none;"></video>
                 <audio id="nativeAudio" preload="auto" style="display: none;"></audio>
 
-                <!-- Custom In-Player Scrubber & Controls Overlay (For Full Scrubbing on HD Pro MP4 Streams) -->
+                <!-- Floating Zoom Level & Quick Fit Reset Badge (Visible when Zoom > 100%) -->
+                <button type="button" class="dx-zoom-reset-badge" id="zoomResetBadge" style="display: none;" title="Klik untuk kembali ke ukuran normal (Fit 100%)">
+                    <span id="zoomResetBadgeText">🔍 200%</span>
+                    <span class="dx-zoom-reset-sub">• Reset Fit</span>
+                </button>
+
+                <!-- Premiere Pro Style Horizontal Pan Scrollbar (Left / Right) -->
+                <div class="dx-pan-scrollbar-h" id="panScrollbarH" style="display: none;" title="Geser video Kiri / Kanan">
+                    <div class="dx-pan-thumb-h" id="panThumbH"></div>
+                </div>
+
+                <!-- Premiere Pro Style Vertical Pan Scrollbar (Up / Down) -->
+                <div class="dx-pan-scrollbar-v" id="panScrollbarV" style="display: none;" title="Geser video Atas / Bawah">
+                    <div class="dx-pan-thumb-v" id="panThumbV"></div>
+                </div>
+
+                <!-- Custom In-Player Scrubber & Controls Overlay (For Full Scrubbing on HD Pro MP4 Streams & Zoom Mode) -->
                 <div class="dx-custom-vcontrols" id="customVideoControls" style="display: none;">
                     <div class="dx-vc-scrubber-wrap" id="vcScrubberWrap" title="Geser atau klik playhead untuk melompat ke waktu">
                         <div class="dx-vc-scrubber-track">
@@ -146,7 +162,7 @@
                         </div>
                     </div>
 
-                    <!-- Group 3: Quality & Playback Speed -->
+                    <!-- Group 3: Quality, Zoom & Playback Speed -->
                     <div class="dx-action-group">
                         <!-- Quality Settings Dropdown -->
                         <div class="dx-dropdown-wrap">
@@ -161,6 +177,22 @@
                                 <div class="dx-dropdown-item" data-quality="720">📺 720p HD</div>
                                 <div class="dx-dropdown-item" data-quality="480">480p</div>
                                 <div class="dx-dropdown-item" data-quality="360">360p (Hemat Data)</div>
+                            </div>
+                        </div>
+
+                        <!-- Premiere Pro Style Video Zoom & Pan Dropdown -->
+                        <div class="dx-dropdown-wrap">
+                            <button class="dx-action-pill" id="btnZoom" title="Zoom & Geser Video seperti Program Monitor Premiere (Alt+Scroll / Drag Video)">
+                                <span class="dx-pill-icon">🔍</span><span id="currentZoomLabel">Fit</span>
+                            </button>
+                            <div class="dx-dropdown-menu" id="zoomMenu" style="display: none;">
+                                <div class="dx-dropdown-item active" data-zoom="1">🖥️ Fit (100% Normal)</div>
+                                <div class="dx-dropdown-item" data-zoom="1.25">🔍 125% Zoom</div>
+                                <div class="dx-dropdown-item" data-zoom="1.5">🔍 150% Zoom</div>
+                                <div class="dx-dropdown-item" data-zoom="2">🔍 200% Zoom</div>
+                                <div class="dx-dropdown-item" data-zoom="2.5">🔍 250% Zoom</div>
+                                <div class="dx-dropdown-item" data-zoom="3">🔍 300% Zoom</div>
+                                <div class="dx-dropdown-item" data-zoom="4">🔍 400% Max Zoom</div>
                             </div>
                         </div>
 
