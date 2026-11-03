@@ -3864,7 +3864,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         const ffmpegArgs = ['-y', '-i', filePath];
 
         if (!isH264) {
-            ffmpegArgs.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-pix_fmt', 'yuv420p');
+            ffmpegArgs.push('-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18', '-pix_fmt', 'yuv420p');
         } else {
             ffmpegArgs.push('-c:v', 'copy');
         }
@@ -3880,17 +3880,38 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         appendLog(`Menjalankan penyesuaian: ffmpeg ${ffmpegArgs.join(' ')}`);
 
         const ffProc = cp.spawn(ffmpegPath, ffmpegArgs, { env: getProcessEnv() });
+        let detectedFileDurationSec = currentVideoDurationSec > 0 ? currentVideoDurationSec : 0;
 
         ffProc.stderr.on('data', (d) => {
             const str = d.toString();
-            const timeMatch = str.match(/time=(\d+):(\d+):(\d+\.\d+)/);
-            if (timeMatch && currentVideoDurationSec > 0) {
+
+            const durMatch = str.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+            if (durMatch) {
+                const parsedDur = (+durMatch[1]) * 3600 + (+durMatch[2]) * 60 + (+durMatch[3]);
+                if (parsedDur > 0) {
+                    detectedFileDurationSec = parsedDur;
+                }
+            }
+
+            const timeMatch = str.match(/time=(\d+):(\d+):(\d+(?:\.\d+)?)/);
+            if (timeMatch && detectedFileDurationSec > 0) {
                 const currentSec = (+timeMatch[1]) * 3600 + (+timeMatch[2]) * 60 + (+timeMatch[3]);
-                const progressRatio = Math.min(1, currentSec / currentVideoDurationSec);
-                const combinedPct = 70 + Math.round(progressRatio * 25);
+                const progressRatio = Math.min(1, currentSec / detectedFileDurationSec);
+                const combinedPct = 70 + Math.round(progressRatio * 26);
                 if (progressBar) progressBar.style.width = `${combinedPct}%`;
                 if (progressPercent) progressPercent.textContent = `${combinedPct}%`;
-                if (progressPhase) progressPhase.textContent = `Menyesuaikan H.264: ${Math.round(progressRatio * 100)}%`;
+                if (progressPhase) progressPhase.textContent = `Menyesuaikan Codec H.264 Premiere: ${Math.round(progressRatio * 100)}%`;
+
+                const speedMatch = str.match(/speed=\s*([0-9.]+x)/);
+                if (speedMatch) {
+                    const spdStr = speedMatch[1];
+                    if (progressSpeed) progressSpeed.textContent = `FFmpeg ${spdStr}`;
+                    const spdVal = parseFloat(spdStr);
+                    if (spdVal > 0 && progressEta) {
+                        const remSec = Math.max(0, Math.ceil((detectedFileDurationSec - currentSec) / spdVal));
+                        progressEta.textContent = remSec > 0 ? `ETA: ~${remSec}s` : 'ETA: Selesai...';
+                    }
+                }
             }
         });
 
@@ -3993,6 +4014,8 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         const isYouTubeUrl = /youtube\.com|youtu\.be/i.test(url);
         const args = [
             '--no-playlist',
+            '--no-quiet',
+            '--progress',
             '--newline',
             '--force-overwrites',
             '--print', 'after_move:filepath',
@@ -4053,7 +4076,23 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         appendLog(`Menjalankan perintah: ${ytDlpPath} ${args.join(' ')}`);
 
         let downloadedFilePath = "";
+        let highestDownloadMappedPct = 0;
+        let downloadStreamIndex = 0;
+        const expectedDurationSec = (useSegment && startVal && endVal)
+            ? Math.max(1, getTimecodeSeconds('end') - getTimecodeSeconds('start'))
+            : (currentVideoDurationSec > 0 ? currentVideoDurationSec : 0);
+
         const proc = cp.spawn(ytDlpPath, args, { env: getProcessEnv() });
+
+        function setDownloadProgressUI(mappedPct, phaseText, speedText = null, etaText = null) {
+            const safePct = Math.max(highestDownloadMappedPct, Math.min(69, Math.round(mappedPct)));
+            highestDownloadMappedPct = safePct;
+            if (progressBar) progressBar.style.width = `${safePct}%`;
+            if (progressPercent) progressPercent.textContent = `${safePct}%`;
+            if (phaseText && progressPhase) progressPhase.textContent = phaseText;
+            if (speedText !== null && progressSpeed) progressSpeed.textContent = speedText;
+            if (etaText !== null && progressEta) progressEta.textContent = etaText;
+        }
 
         function handleChunkText(text) {
             const lines = text.split(/[\r\n]+/);
@@ -4062,22 +4101,58 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                 const trimmed = lines[i].trim();
                 if (!trimmed) continue;
 
-                if (trimmed.startsWith('[download]') || trimmed.startsWith('[Merger]')) {
+                if (trimmed.startsWith('[download]') || trimmed.startsWith('[Merger]') || trimmed.startsWith('[info]')) {
                     appendLog(trimmed);
                 }
 
+                // Stage 1: Initial connection & metadata extraction feedback (0% -> 7%)
+                if (highestDownloadMappedPct < 8) {
+                    if (trimmed.includes('Extracting URL') || trimmed.includes('Downloading webpage')) {
+                        setDownloadProgressUI(3, 'Menghubungkan ke server YouTube...');
+                    } else if (trimmed.includes('player API JSON') || trimmed.includes('m3u8 information')) {
+                        setDownloadProgressUI(5, 'Mengambil informasi stream resolusi tinggi...');
+                    } else if (trimmed.includes('Downloading 1 format') || trimmed.includes('Downloading m3u8 manifest')) {
+                        setDownloadProgressUI(7, 'Memulai pengunduhan stream media...');
+                    }
+                }
+
+                // Track when yt-dlp switches from Video stream (Stream 1) to Audio stream (Stream 2)
+                if (trimmed.startsWith('[download] Destination:')) {
+                    downloadStreamIndex++;
+                }
+
+                // Stage 2A: Standard yt-dlp [download] X.X% progress lines
                 if (trimmed.startsWith('[download]') && trimmed.includes('%')) {
+                    // Ignore tiny HLS initialization header fragment (frag 0/N) that prints 100.0% before frag 1/N starts
+                    if (/\(frag\s+0\//i.test(trimmed)) {
+                        continue;
+                    }
+
                     const percentMatch = trimmed.match(/(\d+(?:\.\d+)?)%/);
                     if (percentMatch) {
                         const rawPct = parseFloat(percentMatch[1]);
-                        const mappedPct = Math.min(68, Math.round(rawPct * 0.68));
-                        if (progressBar) progressBar.style.width = `${mappedPct}%`;
-                        if (progressPercent) progressPercent.textContent = `${mappedPct}%`;
-                        if (progressPhase) progressPhase.textContent = useSegment ? `Mengunduh segmen (${rawPct.toFixed(0)}%)...` : `Mengunduh (${rawPct.toFixed(0)}%)...`;
+                        // Video track is ~88% of download time (mapped 8% -> 62%), Audio track is ~12% (mapped 62% -> 68%)
+                        let mappedPct;
+                        if (isAudioOnly) {
+                            mappedPct = 8 + Math.round((rawPct / 100) * 60);
+                        } else if (downloadStreamIndex <= 1) {
+                            mappedPct = 8 + Math.round((rawPct / 100) * 54);
+                        } else {
+                            mappedPct = 62 + Math.round((rawPct / 100) * 6);
+                        }
+
+                        const fragMatch = trimmed.match(/\(frag\s+(\d+\/\d+)\)/i);
+                        const fragLabel = fragMatch ? ` • Frag ${fragMatch[1]}` : '';
+                        const streamLabel = (!isAudioOnly && downloadStreamIndex > 1) ? 'Audio' : 'Video';
+                        const phaseLabel = useSegment
+                            ? `Mengunduh segmen ${streamLabel} (${rawPct.toFixed(0)}%${fragLabel})...`
+                            : `Mengunduh ${streamLabel} (${rawPct.toFixed(0)}%${fragLabel})...`;
+
+                        setDownloadProgressUI(mappedPct, phaseLabel);
                     }
 
                     const speedMatch = trimmed.match(/at\s+([0-9.]+\s*[a-zA-Z\/]+)/);
-                    if (speedMatch && progressSpeed) {
+                    if (speedMatch && !speedMatch[1].includes('Unknown') && progressSpeed) {
                         progressSpeed.textContent = speedMatch[1];
                     }
 
@@ -4085,10 +4160,17 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                     if (etaMatch && progressEta) {
                         progressEta.textContent = `ETA: ${etaMatch[1]}`;
                     }
+                } else if (trimmed.includes('time=') && expectedDurationSec > 0) {
+                    // Stage 2B: FFmpeg downloader progress (used when --download-sections / segment cutting is active)
+                    const timeMatch = trimmed.match(/time=(\d+):(\d+):(\d+(?:\.\d+)?)/);
+                    if (timeMatch) {
+                        const curSec = (+timeMatch[1]) * 3600 + (+timeMatch[2]) * 60 + (+timeMatch[3]);
+                        const ratio = Math.min(1, curSec / expectedDurationSec);
+                        const mappedPct = 8 + Math.round(ratio * 60);
+                        setDownloadProgressUI(mappedPct, `Mengunduh segmen (${Math.round(ratio * 100)}%)...`);
+                    }
                 } else if (trimmed.includes('[Merger]') || trimmed.includes('[ExtractAudio]')) {
-                    if (progressPhase) progressPhase.textContent = 'Menggabungkan aliran media...';
-                    if (progressBar) progressBar.style.width = '70%';
-                    if (progressPercent) progressPercent.textContent = '70%';
+                    setDownloadProgressUI(69, 'Menggabungkan aliran video & audio...');
                 } else if (trimmed.startsWith('/') || trimmed.match(/^[A-Za-z]:\\/)) {
                     downloadedFilePath = trimmed;
                 }
