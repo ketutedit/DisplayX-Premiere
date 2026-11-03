@@ -64,8 +64,22 @@
 
     const csInterface = new CSInterface();
 
-    // Local HTTP origin for the official YouTube embed and thumbnail proxy
-    const PLAYER_PORT = 48293;
+    // Detect host application (Premiere Pro vs After Effects)
+    let hostAppId = 'PPRO';
+    try {
+        const hostEnv = csInterface.getHostEnvironment ? csInterface.getHostEnvironment() : null;
+        if (hostEnv && hostEnv.appId) {
+            hostAppId = String(hostEnv.appId).toUpperCase();
+        }
+    } catch (e) {}
+    let isAfterEffectsHostApp = (hostAppId === 'AEFT');
+    function getHostAppLabel() {
+        return isAfterEffectsHostApp ? 'After Effects' : 'Premiere Pro';
+    }
+
+    // Local HTTP origin for stream & thumbnail proxy (separate port per host so PPRO & AEFT can run simultaneously)
+    const rootGlobalEarly = typeof globalThis !== 'undefined' ? globalThis : (typeof global !== 'undefined' ? global : window);
+    let PLAYER_PORT = rootGlobalEarly.__ardanePlayerPort || (isAfterEffectsHostApp ? 48294 : 48293);
     let playerServer = null;
     let playerLoadTimer = null;
 
@@ -591,6 +605,9 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
         if (rootGlobal.__ardanePlayerServer && rootGlobal.__ardanePlayerServer.listening) {
             playerServer = rootGlobal.__ardanePlayerServer;
+            if (rootGlobal.__ardanePlayerPort) {
+                PLAYER_PORT = rootGlobal.__ardanePlayerPort;
+            }
             return;
         }
 
@@ -606,12 +623,22 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
             playerServer.listen(PLAYER_PORT, '127.0.0.1', () => {
                 rootGlobal.__ardanePlayerServer = playerServer;
+                rootGlobal.__ardanePlayerPort = PLAYER_PORT;
                 console.log(`Ardane YT Player Server running on port ${PLAYER_PORT}`);
             });
 
             playerServer.on('error', (err) => {
                 if (err.code === 'EADDRINUSE') {
-                    console.log(`Ardane YT Player Server already active on port ${PLAYER_PORT}`);
+                    if (!rootGlobal.__ardanePlayerServer && PLAYER_PORT < 48310) {
+                        PLAYER_PORT += 1;
+                        setTimeout(() => {
+                            try {
+                                playerServer.listen(PLAYER_PORT, '127.0.0.1');
+                            } catch (e) {}
+                        }, 50);
+                    } else {
+                        console.log(`Ardane YT Player Server already active on port ${PLAYER_PORT}`);
+                    }
                 } else {
                     console.warn('Ardane YT Player Server notice:', err.message);
                 }
@@ -3156,7 +3183,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         return { ytDlpPath, ffmpegPath, ffprobePath };
     }
 
-    // Ensure ExtendScript functions are always up-to-date in Premiere Pro even on simple HTML Reload
+    // Ensure ExtendScript functions are always up-to-date in Premiere Pro & After Effects even on simple HTML Reload
     const HOST_EXTENDSCRIPT_CODE = `
         function escapeJSONString(str) {
             if (!str) return '""';
@@ -3166,16 +3193,42 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                             .replace(/\\r/g, '\\\\r')
                             .replace(/\\t/g, '\\\\t') + '"';
         }
+        function isAfterEffectsHost() {
+            try {
+                if (typeof FolderItem !== "undefined") return true;
+                if (app && app.project && typeof app.project.importFile === "function" && !app.project.rootItem) return true;
+            } catch (e) {}
+            return false;
+        }
         function getProjectInfo() {
             try {
                 if (!app || !app.project) {
-                    return '{"hasProject":false,"isSaved":false,"projectPath":"","projectName":""}';
+                    return '{"hasProject":false,"isSaved":false,"projectPath":"","projectName":"","hostApp":"UNKNOWN"}';
                 }
                 var proj = app.project;
-                var pPath = proj.path ? String(proj.path) : "";
-                var pName = proj.name ? String(proj.name) : "";
+                var isAE = isAfterEffectsHost();
+                var hostApp = isAE ? "AEFT" : "PPRO";
+                var pPath = "";
+                var pName = "";
+                if (isAE) {
+                    if (proj.file) {
+                        pPath = proj.file.fsName ? String(proj.file.fsName) : (proj.file.fullName ? String(proj.file.fullName) : "");
+                        try {
+                            pName = proj.file.name ? decodeURI(String(proj.file.name)) : "";
+                        } catch (de) {
+                            pName = proj.file.name ? String(proj.file.name) : "";
+                        }
+                    }
+                } else {
+                    pPath = proj.path ? String(proj.path) : "";
+                    pName = proj.name ? String(proj.name) : "";
+                    if (!pPath && proj.file && proj.file.fsName) {
+                        pPath = String(proj.file.fsName);
+                    }
+                }
                 var isSaved = (pPath !== null && pPath !== "" && pPath.length > 0);
                 return '{"hasProject":true,"isSaved":' + (isSaved ? 'true' : 'false') +
+                       ',"hostApp":' + escapeJSONString(hostApp) +
                        ',"projectPath":' + escapeJSONString(pPath) +
                        ',"projectName":' + escapeJSONString(pName) + '}';
             } catch (err) {
@@ -3198,19 +3251,53 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                 return root;
             }
         }
+        function getOrCreateAEFolder(folderName) {
+            if (!folderName) folderName = "YT Downloads";
+            var proj = app.project;
+            if (!proj || !proj.items) return null;
+            for (var i = 1; i <= proj.items.length; i++) {
+                var item = proj.items[i];
+                if (item && (item instanceof FolderItem) && item.name === folderName && item.parentFolder === proj.rootFolder) {
+                    return item;
+                }
+            }
+            try {
+                return proj.items.addFolder(folderName);
+            } catch (e) {
+                return null;
+            }
+        }
         function importFileToBin(filePath, binName) {
             try {
                 if (!app || !app.project) {
-                    return '{"success":false,"error":"Tidak ada project Premiere Pro yang terbuka."}';
+                    return '{"success":false,"error":"Tidak ada project yang terbuka."}';
                 }
                 if (!filePath) {
                     return '{"success":false,"error":"File path kosong."}';
                 }
                 var fileObj = new File(filePath);
                 if (!fileObj.exists) {
-                    return '{"success":false,"error":"File fisik tidak ditemukan di: " + filePath}';
+                    return '{"success":false,"error":"File fisik tidak ditemukan di: " + ' + escapeJSONString(filePath) + '}';
                 }
-                var targetBin = getOrCreateBin(binName || "YT Downloads");
+                var targetBinName = binName || "YT Downloads";
+                if (isAfterEffectsHost()) {
+                    var io = new ImportOptions(fileObj);
+                    try {
+                        io.sequence = false;
+                        if (typeof ImportAsType !== "undefined" && io.canImportAs && io.canImportAs(ImportAsType.FOOTAGE)) {
+                            io.importAs = ImportAsType.FOOTAGE;
+                        }
+                    } catch (ioErr) {}
+                    var importedItem = app.project.importFile(io);
+                    var targetFolder = getOrCreateAEFolder(targetBinName);
+                    if (importedItem && targetFolder) {
+                        try {
+                            importedItem.parentFolder = targetFolder;
+                        } catch (moveErr) {}
+                    }
+                    return '{"success":true,"hostApp":"AEFT","message":"File berhasil di-import ke folder After Effects","binName":' + escapeJSONString(targetBinName) + ',"filePath":' + escapeJSONString(fileObj.fsName) + '}';
+                }
+                var targetBin = getOrCreateBin(targetBinName);
                 var fileArray = [fileObj.fsName];
                 var beforeCount = targetBin && targetBin.children ? targetBin.children.numItems : 0;
                 app.project.importFiles(fileArray, true, targetBin, false);
@@ -3228,7 +3315,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                         }
                     }
                 }
-                return '{"success":true,"message":"File berhasil di-import ke bin","binName":' + escapeJSONString(binName || "YT Downloads") + ',"filePath":' + escapeJSONString(fileObj.fsName) + '}';
+                return '{"success":true,"hostApp":"PPRO","message":"File berhasil di-import ke bin Premiere Pro","binName":' + escapeJSONString(targetBinName) + ',"filePath":' + escapeJSONString(fileObj.fsName) + '}';
             } catch (err) {
                 return '{"success":false,"error":' + escapeJSONString(err.toString()) + '}';
             }
@@ -3256,35 +3343,48 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         }
     }
 
-    function checkProjectStatus() {
-        if (!statusDot || !statusText) return;
+    function checkProjectStatus(onCheckedCallback) {
+        if (!statusDot || !statusText) {
+            if (typeof onCheckedCallback === 'function') onCheckedCallback(false);
+            return;
+        }
         csInterface.evalScript(HOST_EXTENDSCRIPT_CODE + '\ngetProjectInfo();', function (result) {
             try {
                 if (!result || result === 'EvalScript error.') {
                     statusDot.className = 'dot disconnected';
-                    statusText.textContent = "Tidak dapat terhubung ke Premiere Pro";
+                    statusText.textContent = `Tidak dapat terhubung ke ${getHostAppLabel()}`;
+                    isProjectValid = false;
+                    if (typeof onCheckedCallback === 'function') onCheckedCallback(false);
                     return;
                 }
 
                 const info = JSON.parse(result);
-                appendLog(`Project check: ${JSON.stringify(info)}`);
+                if (info.hostApp === 'AEFT') {
+                    isAfterEffectsHostApp = true;
+                } else if (info.hostApp === 'PPRO') {
+                    isAfterEffectsHostApp = false;
+                }
+                const hostLabel = getHostAppLabel();
+                appendLog(`Project check (${hostLabel}): ${JSON.stringify(info)}`);
 
                 if (!info.hasProject) {
                     statusDot.className = 'dot disconnected';
                     statusText.textContent = "Tidak ada project terbuka";
-                    if (savePathText) savePathText.textContent = "Buka atau buat project di Premiere";
+                    if (savePathText) savePathText.textContent = `Buka atau buat project di ${hostLabel}`;
                     isProjectValid = false;
                     if (btnDownload) btnDownload.disabled = true;
+                    if (typeof onCheckedCallback === 'function') onCheckedCallback(false);
                     return;
                 }
 
                 const hasPath = Boolean(info.projectPath && info.projectPath.length > 0);
                 if (!hasPath) {
                     statusDot.className = 'dot';
-                    statusText.textContent = "Project belum disimpan (Unsaved)";
-                    if (savePathText) savePathText.textContent = "Simpan project (Cmd+S / Ctrl+S) terlebih dahulu!";
+                    statusText.textContent = `Project ${hostLabel} belum disimpan (Unsaved)`;
+                    if (savePathText) savePathText.textContent = `Simpan project ${hostLabel} (Cmd+S / Ctrl+S) terlebih dahulu!`;
                     isProjectValid = false;
                     if (btnDownload) btnDownload.disabled = true;
+                    if (typeof onCheckedCallback === 'function') onCheckedCallback(false);
                     return;
                 }
 
@@ -3301,14 +3401,17 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                 }
 
                 statusDot.className = 'dot connected';
-                statusText.textContent = `Aktif: ${info.projectName || 'Project'}`;
+                statusText.textContent = `Aktif (${hostLabel}): ${info.projectName || 'Project'}`;
                 if (savePathText) savePathText.textContent = currentTargetFolder;
                 isProjectValid = true;
                 if (btnDownload) btnDownload.disabled = isDownloading;
+                if (typeof onCheckedCallback === 'function') onCheckedCallback(true);
             } catch (e) {
                 appendLog("Error parsing getProjectInfo: " + e.message);
                 statusDot.className = 'dot disconnected';
                 statusText.textContent = "Error komunikasi ExtendScript: " + e.message;
+                isProjectValid = false;
+                if (typeof onCheckedCallback === 'function') onCheckedCallback(false);
             }
         });
     }
@@ -3961,33 +4064,38 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                 return;
             }
 
-            if (!isProjectValid || !currentTargetFolder) {
-                showDlToast("Project belum disimpan. Silakan simpan (Cmd+S / Ctrl+S) project Premiere Anda!", "error");
-                checkProjectStatus();
-                return;
-            }
+            const proceedWithDownload = () => {
+                const binName = (binNameInput && binNameInput.value.trim()) ? binNameInput.value.trim() : "YT Downloads";
+                const formatChoice = formatSelect ? formatSelect.value : 'best_video';
+                const useSegment = Boolean(checkSegment && checkSegment.checked);
+                if (useSegment) {
+                    updateTimecodeValues();
+                    const startSec = getTimecodeSeconds('start');
+                    const endSec = getTimecodeSeconds('end');
+                    if (endSec <= startSec) {
+                        showDlToast("Waktu Selesai (End) harus lebih besar dari waktu Mulai (Start)!", "error");
+                        return;
+                    }
+                }
+                const startVal = cleanTimestamp(startTimeInput ? startTimeInput.value : "");
+                const endVal = cleanTimestamp(endTimeInput ? endTimeInput.value : "");
 
-            const binName = (binNameInput && binNameInput.value.trim()) ? binNameInput.value.trim() : "YT Downloads";
-            const formatChoice = formatSelect ? formatSelect.value : 'best_video';
-            const useSegment = Boolean(checkSegment && checkSegment.checked);
-            if (useSegment) {
-                updateTimecodeValues();
-                const startSec = getTimecodeSeconds('start');
-                const endSec = getTimecodeSeconds('end');
-                if (endSec <= startSec) {
-                    showDlToast("Waktu Selesai (End) harus lebih besar dari waktu Mulai (Start)!", "error");
+                if (!cp || !cp.spawn) {
+                    showDlToast(`Node.js runtime belum aktif. Muat ulang panel di ${getHostAppLabel()}.`, "error");
                     return;
                 }
-            }
-            const startVal = cleanTimestamp(startTimeInput ? startTimeInput.value : "");
-            const endVal = cleanTimestamp(endTimeInput ? endTimeInput.value : "");
 
-            if (!cp || !cp.spawn) {
-                showDlToast("Node.js runtime belum aktif. Muat ulang panel di Premiere.", "error");
-                return;
-            }
+                startDownload({ url, formatChoice, useSegment, startVal, endVal, binName });
+            };
 
-            startDownload({ url, formatChoice, useSegment, startVal, endVal, binName });
+            // Re-verify project save path automatically so saving with Cmd+S works immediately
+            checkProjectStatus((valid) => {
+                if (!valid || !isProjectValid || !currentTargetFolder) {
+                    showDlToast(`Project belum disimpan. Silakan simpan (Cmd+S / Ctrl+S) project ${getHostAppLabel()} Anda!`, "error");
+                    return;
+                }
+                proceedWithDownload();
+            });
         });
     }
 
@@ -4189,7 +4297,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
             if (code === 0) {
                 if (progressBar) progressBar.style.width = '70%';
                 if (progressPercent) progressPercent.textContent = '70%';
-                if (progressPhase) progressPhase.textContent = 'Memverifikasi kompatibilitas codec Premiere...';
+                if (progressPhase) progressPhase.textContent = `Memverifikasi kompatibilitas codec ${getHostAppLabel()}...`;
 
                 if (!downloadedFilePath || (fs && fs.existsSync && !fs.existsSync(downloadedFilePath))) {
                     downloadedFilePath = getLatestFileInFolder(currentTargetFolder);
@@ -4201,7 +4309,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                     ensurePremiereCompatibility(downloadedFilePath, ffmpegPath, ffprobePath, (finalPath) => {
                         if (progressBar) progressBar.style.width = '98%';
                         if (progressPercent) progressPercent.textContent = '98%';
-                        if (progressPhase) progressPhase.textContent = 'Memasukkan ke Bin Premiere Pro...';
+                        if (progressPhase) progressPhase.textContent = `Memasukkan ke Bin ${getHostAppLabel()}...`;
                         if (progressSpeed) progressSpeed.textContent = '';
                         if (progressEta) progressEta.textContent = 'Selesai';
                         appendLog(`File final siap dimasukkan: ${finalPath}`);
@@ -4265,18 +4373,19 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
             if (btnDownloadText) btnDownloadText.textContent = "Download & Masukkan ke Bin";
 
             appendLog(`Hasil ExtendScript: ${result}`);
+            const hostLabel = getHostAppLabel();
             try {
                 const res = JSON.parse(result);
                 if (res.success) {
                     if (progressBar) progressBar.style.width = '100%';
                     if (progressPercent) progressPercent.textContent = '100%';
-                    if (progressPhase) progressPhase.textContent = `Selesai dimasukkan ke Bin: "${binName}"!`;
-                    showDlToast(`Berhasil! Video (H.264 & AAC) masuk ke Bin "${binName}".`, "success", 7000);
+                    if (progressPhase) progressPhase.textContent = `Selesai dimasukkan ke Bin ${hostLabel}: "${binName}"!`;
+                    showDlToast(`Berhasil! Media masuk ke Bin "${binName}" di ${hostLabel}.`, "success", 7000);
                 } else {
-                    showDlToast(`Gagal import ke Premiere: ${res.error || 'Unknown error'}`, "error");
+                    showDlToast(`Gagal import ke ${hostLabel}: ${res.error || 'Unknown error'}`, "error");
                 }
             } catch (e) {
-                showDlToast("Download berhasil! Silakan cek Bin di Premiere Pro.", "success");
+                showDlToast(`Download berhasil! Silakan cek Bin di ${hostLabel}.`, "success");
             }
 
             setTimeout(() => {
