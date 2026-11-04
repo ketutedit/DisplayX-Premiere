@@ -1,21 +1,24 @@
 ========================================================================
-       PANDUAN INSTALASI ARDANE YT PLAYER (PRO SUITE v2.0)
-       Untuk Adobe Premiere Pro & Adobe After Effects (Windows & Mac)
+    PANDUAN INSTALASI OFFLINE ARDANE YT PLAYER (PRO SUITE v2.0)
+    Untuk Adobe Premiere Pro & Adobe After Effects (Windows & Mac)
 ========================================================================
 
-A. CARA INSTALL DI WINDOWS (1-KLIK OTOMATIS)
+A. CARA INSTALL DI WINDOWS (100% OFFLINE - TANPA INTERNET SAAT INSTALL)
 ------------------------------------------------------------------------
+Seluruh komponen mesin (yt-dlp.exe, ffmpeg.exe, ffprobe.exe) SUDAH LENGKAP
+di dalam paket ini sehingga proses install hanya membutuhkan waktu ~2 detik
+dan TIDAK membutuhkan koneksi internet saat instalasi.
+
 1. Klik kanan file ZIP ini lalu pilih "Extract All..." (Ekstrak semua file
    ke dalam folder terlebih dahulu, JANGAN dijalankan langsung dari dalam ZIP).
-2. Pastikan komputer terhubung ke internet (untuk mengunduh komponen H.264/4K
-   FFmpeg secara otomatis saat instalasi pertama).
-3. Klik 2x (Double Click) file:
+2. Klik 2x (Double Click) file:
    👉 Install_Ardane_YT_Player_Windows.bat
    (Jika muncul jendela Windows SmartScreen "Windows protected your PC",
-    klik "More info" lalu klik tombol "Run anyway").
-4. Tunggu hingga muncul pesan hijau "INSTALASI ARDANE YT PLAYER BERHASIL!".
-5. Buka (atau Restart jika sedang terbuka) Adobe Premiere Pro atau After Effects.
-6. Masuk ke menu atas:
+    klik tulisan "More info" lalu klik tombol "Run anyway").
+3. Dalam 2 detik akan langsung muncul pesan hijau:
+   "INSTALASI OFFLINE ARDANE YT PLAYER BERHASIL!".
+4. Buka (atau Restart jika sedang terbuka) Adobe Premiere Pro atau After Effects.
+5. Masuk ke menu atas:
    Window > Extensions > Ardane YT Player
 
 
@@ -29,17 +32,4 @@ B. CARA INSTALL DI macOS (APPLE SILICON M1/M2/M3/M4 & INTEL)
 3. Buka / Restart Adobe Premiere Pro atau After Effects.
 4. Masuk ke menu atas:
    Window > Extensions > Ardane YT Player
-
-
-C. FITUR UTAMA ARDANE YT PLAYER PRO SUITE
-------------------------------------------------------------------------
-- Streaming YouTube 1080p - 4K langsung di dalam Premiere Pro & After Effects
-  (0 MB Disk / RAM Stream).
-- Fitur Zoom & Geser Video (Fit s/d 400%) ala Program Monitor Premiere Pro
-  (Bisa drag video langsung, pakai scrollbar tepi, atau Alt + Scroll).
-- Frame-by-frame stepping (, dan .), penanda Loop In [I] & Out [O], serta
-  kecepatan putar 0.25x - 2x.
-- Tab Downloader & Import Bin: Download video/audio (hingga 4K H.264 MP4,
-  MP3, WAV) atau potong durasi segmen dan otomatis masuk ke dalam Bin/Folder
-  Project Premiere Pro maupun After Effects!
 ========================================================================

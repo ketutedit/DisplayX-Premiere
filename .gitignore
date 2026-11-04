@@ -2,3 +2,7 @@ bin/
 .DS_Store
 *.log
 node_modules/
+
+bin/ffmpeg.exe
+bin/ffprobe.exe
+bin/yt-dlp.exe

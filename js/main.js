@@ -4444,7 +4444,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         return val.trim().replace(/\s+/g, '');
     }
 
-    function getStreamCodec(ffprobePath, filePath, streamType) {
+    function getStreamCodec(ffprobePath, filePath, streamType, ffmpegFallbackPath = "") {
         if (!cp || !cp.spawnSync) return "";
         try {
             const res = cp.spawnSync(ffprobePath, [
@@ -4454,10 +4454,25 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                 "-of", "default=noprint_wrappers=1:nokey=1",
                 filePath
             ], { env: getProcessEnv(), timeout: 10000, windowsHide: true });
-            return res.stdout ? res.stdout.toString().trim().toLowerCase() : "";
-        } catch (e) {
-            return "";
+            const out = res.stdout ? res.stdout.toString().trim().toLowerCase() : "";
+            if (out) return out.split(/[\r\n]+/)[0].trim();
+        } catch (e) {}
+
+        // Fallback via ffmpeg -i if ffprobe is not available
+        if (ffmpegFallbackPath) {
+            try {
+                const ffRes = cp.spawnSync(ffmpegFallbackPath, ["-i", filePath], { env: getProcessEnv(), timeout: 10000, windowsHide: true });
+                const stderrStr = ffRes.stderr ? ffRes.stderr.toString() : "";
+                if (streamType.startsWith('v')) {
+                    const vMatch = stderrStr.match(/Video:\s*([a-zA-Z0-9_]+)/i);
+                    if (vMatch) return vMatch[1].toLowerCase();
+                } else if (streamType.startsWith('a')) {
+                    const aMatch = stderrStr.match(/Audio:\s*([a-zA-Z0-9_]+)/i);
+                    if (aMatch) return aMatch[1].toLowerCase();
+                }
+            } catch (e2) {}
         }
+        return "";
     }
 
     function ensurePremiereCompatibility(filePath, ffmpegPath, ffprobePath, callback) {
@@ -4470,8 +4485,8 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
             return;
         }
 
-        const vCodec = getStreamCodec(ffprobePath, filePath, 'v:0');
-        const aCodec = getStreamCodec(ffprobePath, filePath, 'a:0');
+        const vCodec = getStreamCodec(ffprobePath, filePath, 'v:0', ffmpegPath);
+        const aCodec = getStreamCodec(ffprobePath, filePath, 'a:0', ffmpegPath);
         appendLog(`Analisis Codec File: Video=[${vCodec || 'unknown'}], Audio=[${aCodec || 'unknown'}]`);
 
         const isH264 = (vCodec === 'h264');
