@@ -375,7 +375,7 @@
                 'pipe:1'
             );
 
-            const ffProc = cp.spawn(ffmpegBin, ffArgs, { env: getProcessEnv() });
+            const ffProc = cp.spawn(ffmpegBin, ffArgs, { env: getProcessEnv(), windowsHide: true });
             session = {
                 key: sessionKey,
                 startSec: startSec,
@@ -817,11 +817,51 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         try { p = decodeURIComponent(p); } catch (e) {
             try { p = decodeURI(p); } catch (e2) {}
         }
-        return String(p).replace(/^file:\/\//, '').replace(/^\/([A-Za-z]:\/)/, '$1');
+        return String(p).replace(/^file:\/\//, '').replace(/^\/([A-Za-z]:[\/\\])/, '$1');
+    }
+
+    const isWindows = (typeof process !== 'undefined' && process.platform === 'win32') ||
+                      (typeof navigator !== 'undefined' && /Win/i.test(navigator.platform || ''));
+
+    function getExtensionRootClean() {
+        try {
+            const extRaw = csInterface.getSystemPath(SystemPath.EXTENSION);
+            return cleanCepPath(extRaw);
+        } catch (e) {
+            return "";
+        }
     }
 
     function getProcessEnv() {
+        const extClean = getExtensionRootClean();
+        const envBase = (typeof process !== 'undefined' && process.env) ? process.env : {};
+
+        if (isWindows) {
+            const localAppData = envBase.LOCALAPPDATA || (envBase.USERPROFILE ? `${envBase.USERPROFILE}\\AppData\\Local` : 'C:\\Users\\Default\\AppData\\Local');
+            const appData = envBase.APPDATA || (envBase.USERPROFILE ? `${envBase.USERPROFILE}\\AppData\\Roaming` : '');
+            const userProfile = envBase.USERPROFILE || 'C:\\Users\\Default';
+            const winPaths = [
+                extClean ? path.join(extClean, 'bin') : '',
+                extClean ? path.join(extClean, 'bin', 'win') : '',
+                `${localAppData}\\ArdaneYTPlayer\\bin`,
+                `${localAppData}\\Microsoft\\WinGet\\Links`,
+                `${userProfile}\\.deno\\bin`,
+                'C:\\ProgramData\\chocolatey\\bin',
+                'C:\\ffmpeg\\bin',
+                appData ? `${appData}\\Adobe\\CEP\\extensions\\com.displayx.panel\\bin` : ''
+            ].filter(Boolean);
+
+            const existingPath = envBase.PATH || envBase.Path || '';
+            const combinedWinPath = winPaths.join(';') + (existingPath ? ';' + existingPath : '');
+            return Object.assign({}, envBase, {
+                PATH: combinedWinPath,
+                Path: combinedWinPath,
+                PYTHONIOENCODING: 'utf-8'
+            });
+        }
+
         const standardPaths = [
+            extClean ? `${extClean}/bin` : '',
             '/Users/ketut/.deno/bin',
             '/opt/homebrew/bin',
             '/usr/local/bin',
@@ -829,12 +869,12 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
             '/bin',
             '/usr/sbin',
             '/sbin'
-        ];
-        const existingPath = (typeof process !== 'undefined' && process.env && process.env.PATH) ? process.env.PATH : '';
+        ].filter(Boolean);
+        const existingPath = envBase.PATH || '';
         const combinedPath = standardPaths.join(':') + (existingPath ? ':' + existingPath : '');
-        const home = (typeof process !== 'undefined' && process.env && process.env.HOME) ? process.env.HOME : '/Users/ketut';
+        const home = envBase.HOME || '/Users/ketut';
 
-        return Object.assign({}, (typeof process !== 'undefined' && process.env) ? process.env : {}, {
+        return Object.assign({}, envBase, {
             PATH: combinedPath,
             LANG: 'en_US.UTF-8',
             LC_ALL: 'en_US.UTF-8',
@@ -843,11 +883,31 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     }
 
     function resolveYtDlp() {
-        let extClean = "";
-        try {
-            const extRaw = csInterface.getSystemPath(SystemPath.EXTENSION);
-            extClean = cleanCepPath(extRaw);
-        } catch (e) {}
+        const extClean = getExtensionRootClean();
+        const envBase = (typeof process !== 'undefined' && process.env) ? process.env : {};
+
+        if (isWindows) {
+            const localAppData = envBase.LOCALAPPDATA || (envBase.USERPROFILE ? `${envBase.USERPROFILE}\\AppData\\Local` : '');
+            const appData = envBase.APPDATA || (envBase.USERPROFILE ? `${envBase.USERPROFILE}\\AppData\\Roaming` : '');
+            const winCandidates = [
+                extClean ? path.join(extClean, 'bin', 'yt-dlp.exe') : '',
+                extClean ? path.join(extClean, 'bin', 'win', 'yt-dlp.exe') : '',
+                localAppData ? path.join(localAppData, 'ArdaneYTPlayer', 'bin', 'yt-dlp.exe') : '',
+                appData ? path.join(appData, 'Adobe', 'CEP', 'extensions', 'com.displayx.panel', 'bin', 'yt-dlp.exe') : '',
+                localAppData ? path.join(localAppData, 'Microsoft', 'WinGet', 'Links', 'yt-dlp.exe') : '',
+                'C:\\ProgramData\\chocolatey\\bin\\yt-dlp.exe',
+                'C:\\ffmpeg\\bin\\yt-dlp.exe'
+            ].filter(Boolean);
+
+            if (fs) {
+                for (const p of winCandidates) {
+                    try {
+                        if (fs.existsSync(p)) return p;
+                    } catch (e) {}
+                }
+            }
+            return 'yt-dlp.exe';
+        }
 
         const candidates = [
             extClean ? `${extClean}/bin/yt-dlp` : '',
@@ -868,11 +928,31 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     }
 
     function resolveFfmpeg() {
-        let extClean = "";
-        try {
-            const extRaw = csInterface.getSystemPath(SystemPath.EXTENSION);
-            extClean = cleanCepPath(extRaw);
-        } catch (e) {}
+        const extClean = getExtensionRootClean();
+        const envBase = (typeof process !== 'undefined' && process.env) ? process.env : {};
+
+        if (isWindows) {
+            const localAppData = envBase.LOCALAPPDATA || (envBase.USERPROFILE ? `${envBase.USERPROFILE}\\AppData\\Local` : '');
+            const appData = envBase.APPDATA || (envBase.USERPROFILE ? `${envBase.USERPROFILE}\\AppData\\Roaming` : '');
+            const winCandidates = [
+                extClean ? path.join(extClean, 'bin', 'ffmpeg.exe') : '',
+                extClean ? path.join(extClean, 'bin', 'win', 'ffmpeg.exe') : '',
+                localAppData ? path.join(localAppData, 'ArdaneYTPlayer', 'bin', 'ffmpeg.exe') : '',
+                appData ? path.join(appData, 'Adobe', 'CEP', 'extensions', 'com.displayx.panel', 'bin', 'ffmpeg.exe') : '',
+                localAppData ? path.join(localAppData, 'Microsoft', 'WinGet', 'Links', 'ffmpeg.exe') : '',
+                'C:\\ProgramData\\chocolatey\\bin\\ffmpeg.exe',
+                'C:\\ffmpeg\\bin\\ffmpeg.exe'
+            ].filter(Boolean);
+
+            if (fs) {
+                for (const p of winCandidates) {
+                    try {
+                        if (fs.existsSync(p)) return p;
+                    } catch (e) {}
+                }
+            }
+            return 'ffmpeg.exe';
+        }
 
         const candidates = [
             extClean ? `${extClean}/bin/ffmpeg` : '',
@@ -889,6 +969,132 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
             }
         }
         return '/opt/homebrew/bin/ffmpeg';
+    }
+
+    function resolveFfprobe() {
+        const extClean = getExtensionRootClean();
+        const envBase = (typeof process !== 'undefined' && process.env) ? process.env : {};
+
+        if (isWindows) {
+            const localAppData = envBase.LOCALAPPDATA || (envBase.USERPROFILE ? `${envBase.USERPROFILE}\\AppData\\Local` : '');
+            const appData = envBase.APPDATA || (envBase.USERPROFILE ? `${envBase.USERPROFILE}\\AppData\\Roaming` : '');
+            const winCandidates = [
+                extClean ? path.join(extClean, 'bin', 'ffprobe.exe') : '',
+                extClean ? path.join(extClean, 'bin', 'win', 'ffprobe.exe') : '',
+                localAppData ? path.join(localAppData, 'ArdaneYTPlayer', 'bin', 'ffprobe.exe') : '',
+                appData ? path.join(appData, 'Adobe', 'CEP', 'extensions', 'com.displayx.panel', 'bin', 'ffprobe.exe') : '',
+                localAppData ? path.join(localAppData, 'Microsoft', 'WinGet', 'Links', 'ffprobe.exe') : '',
+                'C:\\ProgramData\\chocolatey\\bin\\ffprobe.exe',
+                'C:\\ffmpeg\\bin\\ffprobe.exe'
+            ].filter(Boolean);
+
+            if (fs) {
+                for (const p of winCandidates) {
+                    try {
+                        if (fs.existsSync(p)) return p;
+                    } catch (e) {}
+                }
+            }
+            return 'ffprobe.exe';
+        }
+
+        const candidates = [
+            extClean ? `${extClean}/bin/ffprobe` : '',
+            '/opt/homebrew/bin/ffprobe',
+            '/usr/local/bin/ffprobe',
+            '/usr/bin/ffprobe'
+        ].filter(Boolean);
+
+        if (fs) {
+            for (const p of candidates) {
+                try {
+                    if (fs.existsSync(p)) return p;
+                } catch (e) {}
+            }
+        }
+        return '/opt/homebrew/bin/ffprobe';
+    }
+
+    function readSystemClipboard(callback) {
+        if (!isWindows && cp) {
+            cp.exec('/usr/bin/pbpaste', { windowsHide: true }, (err, stdout) => {
+                if (!err && typeof stdout === 'string') {
+                    return callback(stdout.trim());
+                }
+                if (navigator.clipboard && navigator.clipboard.readText) {
+                    navigator.clipboard.readText().then(t => callback((t || '').trim())).catch(() => callback(''));
+                } else {
+                    callback('');
+                }
+            });
+            return;
+        }
+
+        if (isWindows && cp) {
+            cp.exec('powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Command "Get-Clipboard -Raw"', { windowsHide: true, timeout: 4000 }, (err, stdout) => {
+                if (!err && typeof stdout === 'string' && stdout.trim()) {
+                    return callback(stdout.trim());
+                }
+                if (navigator.clipboard && navigator.clipboard.readText) {
+                    navigator.clipboard.readText().then(t => callback((t || '').trim())).catch(() => callback(''));
+                } else {
+                    callback('');
+                }
+            });
+            return;
+        }
+
+        if (navigator.clipboard && navigator.clipboard.readText) {
+            navigator.clipboard.readText().then(t => callback((t || '').trim())).catch(() => callback(''));
+        } else {
+            callback('');
+        }
+    }
+
+    function writeSystemClipboard(text, callback) {
+        if (!text) {
+            if (callback) callback(false);
+            return;
+        }
+        if (!isWindows && cp) {
+            try {
+                const p = cp.spawn('/usr/bin/pbcopy', [], { windowsHide: true });
+                p.stdin.write(String(text));
+                p.stdin.end();
+                if (callback) callback(true);
+                return;
+            } catch (e) {}
+        }
+        if (isWindows && cp) {
+            try {
+                const p = cp.spawn('clip', [], { windowsHide: true });
+                p.stdin.write(String(text));
+                p.stdin.end();
+                if (callback) callback(true);
+                return;
+            } catch (e) {}
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(String(text)).then(() => {
+                if (callback) callback(true);
+            }).catch(() => {
+                if (callback) callback(false);
+            });
+            return;
+        }
+        if (callback) callback(false);
+    }
+
+    function getBrowserCookieSource() {
+        if (!isWindows) return 'safari';
+        try {
+            const envBase = (typeof process !== 'undefined' && process.env) ? process.env : {};
+            const localAppData = envBase.LOCALAPPDATA || '';
+            if (fs && localAppData && fs.existsSync(path.join(localAppData, 'Google', 'Chrome', 'User Data'))) {
+                return 'chrome';
+            }
+        } catch (e) {}
+        return 'edge';
     }
 
     function getEffectiveDuration() {
@@ -1039,7 +1245,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
             const args = ['--force-ipv4', '-g', '-f', formatRule, `https://www.youtube.com/watch?v=${videoId}`];
             const env = getProcessEnv();
-            cp.execFile(ytDlp, args, { env, timeout: 20000 }, (err, stdout, stderr) => {
+            cp.execFile(ytDlp, args, { env, timeout: 20000, windowsHide: true }, (err, stdout, stderr) => {
                 if (err) return reject(new Error(stderr || err.message));
                 const url = stdout.trim().split('\n')[0].trim();
                 if (!url || !url.startsWith('http')) return reject(new Error("Invalid stream URL"));
@@ -1335,7 +1541,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         ];
         const env = getProcessEnv();
 
-        const proc = cp.spawn(ytDlp, args, { env });
+        const proc = cp.spawn(ytDlp, args, { env, windowsHide: true });
         activeYtDlpProc = proc;
         const stdoutChunks = [];
 
@@ -2144,7 +2350,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         let stdoutData = "";
         let stderrData = "";
 
-        const proc = cp.spawn(ytDlp, args, { env: getProcessEnv() });
+        const proc = cp.spawn(ytDlp, args, { env: getProcessEnv(), windowsHide: true });
 
         proc.stdout.on('data', d => stdoutData += d.toString());
         proc.stderr.on('data', d => stderrData += d.toString());
@@ -2367,10 +2573,8 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     }
 
     function checkClipboard() {
-        if (!cp) return;
-        cp.exec('/usr/bin/pbpaste', (err, stdout) => {
-            if (err || !stdout) return;
-            const text = stdout.trim();
+        readSystemClipboard((text) => {
+            if (!text) return;
             if (text && text !== lastDetectedClipboard) {
                 const vidId = extractYouTubeId(text);
                 const isMedia = isSupportedDownloadMediaUrl(text);
@@ -2528,14 +2732,13 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     btnCopyLink.addEventListener('click', () => {
         if (!currentVideo || !currentVideo.id) return;
         const link = `https://www.youtube.com/watch?v=${currentVideo.id}`;
-        if (cp) {
-            const p = cp.spawn('/usr/bin/pbcopy');
-            p.stdin.write(link);
-            p.stdin.end();
-            showToast("📋 Link disalin ke clipboard!");
-        } else {
-            showToast(`Link: ${link}`);
-        }
+        writeSystemClipboard(link, (ok) => {
+            if (ok) {
+                showToast("📋 Link disalin ke clipboard!");
+            } else {
+                showToast(`Link: ${link}`);
+            }
+        });
     });
 
     // Open Current Video in Browser Button
@@ -3047,25 +3250,16 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
             }
         };
 
-        if (cp) {
-            cp.exec('/usr/bin/pbpaste', (err, stdout) => {
-                const clip = (!err && stdout) ? stdout.trim() : '';
-                if (clip) {
-                    processUrl(clip);
-                } else if (urlInput && urlInput.value.trim()) {
-                    processUrl(urlInput.value.trim());
-                } else {
-                    if (urlInput) urlInput.focus();
-                    showToast('Salin (Copy) link YouTube terlebih dahulu.');
-                }
-            });
-        } else if (navigator.clipboard && navigator.clipboard.readText) {
-            navigator.clipboard.readText().then(processUrl).catch(() => {
-                if (urlInput && urlInput.value.trim()) {
-                    processUrl(urlInput.value.trim());
-                }
-            });
-        }
+        readSystemClipboard((clip) => {
+            if (clip) {
+                processUrl(clip);
+            } else if (urlInput && urlInput.value.trim()) {
+                processUrl(urlInput.value.trim());
+            } else {
+                if (urlInput) urlInput.focus();
+                showToast('Salin (Copy) link YouTube terlebih dahulu.');
+            }
+        });
     }
 
     if (btnStreamUrl) {
@@ -3515,26 +3709,11 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     }
 
     function resolveDownloaderBinaries() {
-        const ytDlpPath = resolveYtDlp();
-        let ffmpegPath = '/opt/homebrew/bin/ffmpeg';
-        if (fs && fs.existsSync && !fs.existsSync(ffmpegPath)) {
-            if (fs.existsSync('/usr/local/bin/ffmpeg')) {
-                ffmpegPath = '/usr/local/bin/ffmpeg';
-            } else {
-                ffmpegPath = 'ffmpeg';
-            }
-        }
-
-        let ffprobePath = '/opt/homebrew/bin/ffprobe';
-        if (fs && fs.existsSync && !fs.existsSync(ffprobePath)) {
-            if (fs.existsSync('/usr/local/bin/ffprobe')) {
-                ffprobePath = '/usr/local/bin/ffprobe';
-            } else {
-                ffprobePath = 'ffprobe';
-            }
-        }
-
-        return { ytDlpPath, ffmpegPath, ffprobePath };
+        return {
+            ytDlpPath: resolveYtDlp(),
+            ffmpegPath: resolveFfmpeg(),
+            ffprobePath: resolveFfprobe()
+        };
     }
 
     // Ensure ExtendScript functions are always up-to-date in Premiere Pro & After Effects even on simple HTML Reload
@@ -3859,14 +4038,15 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         args.push(url);
 
         if (checkCookies && checkCookies.checked) {
-            args.splice(1, 0, '--cookies-from-browser', 'safari');
-            appendLog("Menggunakan cookie Safari untuk otentikasi");
+            const cookieBrowser = getBrowserCookieSource();
+            args.splice(1, 0, '--cookies-from-browser', cookieBrowser);
+            appendLog(`Menggunakan cookie ${cookieBrowser} untuk otentikasi`);
         }
 
         let stdoutData = "";
         let stderrData = "";
 
-        const metaProc = cp.spawn(ytDlpPath, args, { env: getProcessEnv() });
+        const metaProc = cp.spawn(ytDlpPath, args, { env: getProcessEnv(), windowsHide: true });
 
         metaProc.stdout.on('data', (chunk) => {
             stdoutData += chunk.toString();
@@ -4030,10 +4210,8 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
     if (btnPasteDlUrl) {
         btnPasteDlUrl.addEventListener('click', () => {
-            if (!cp) return;
-            cp.exec('/usr/bin/pbpaste', (err, stdout) => {
-                if (!err && stdout && stdout.trim()) {
-                    const clip = stdout.trim();
+            readSystemClipboard((clip) => {
+                if (clip) {
                     if (ytUrlInput) ytUrlInput.value = clip;
                     updatePlatformBadge(clip);
                     analyzeCurrentLink();
@@ -4275,7 +4453,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                 "-show_entries", "stream=codec_name",
                 "-of", "default=noprint_wrappers=1:nokey=1",
                 filePath
-            ], { env: getProcessEnv(), timeout: 10000 });
+            ], { env: getProcessEnv(), timeout: 10000, windowsHide: true });
             return res.stdout ? res.stdout.toString().trim().toLowerCase() : "";
         } catch (e) {
             return "";
@@ -4336,7 +4514,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
         appendLog(`Menjalankan penyesuaian: ffmpeg ${ffmpegArgs.join(' ')}`);
 
-        const ffProc = cp.spawn(ffmpegPath, ffmpegArgs, { env: getProcessEnv() });
+        const ffProc = cp.spawn(ffmpegPath, ffmpegArgs, { env: getProcessEnv(), windowsHide: true });
         let detectedFileDurationSec = currentVideoDurationSec > 0 ? currentVideoDurationSec : 0;
 
         ffProc.stderr.on('data', (d) => {
@@ -4493,7 +4671,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         args.push('-o', outputTemplate, url);
 
         if (checkCookies && checkCookies.checked) {
-            args.splice(1, 0, '--cookies-from-browser', 'safari');
+            args.splice(1, 0, '--cookies-from-browser', getBrowserCookieSource());
         }
 
         if (formatChoice === 'best_video') {
@@ -4544,7 +4722,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
             ? Math.max(1, getTimecodeSeconds('end') - getTimecodeSeconds('start'))
             : (currentVideoDurationSec > 0 ? currentVideoDurationSec : 0);
 
-        const proc = cp.spawn(ytDlpPath, args, { env: getProcessEnv() });
+        const proc = cp.spawn(ytDlpPath, args, { env: getProcessEnv(), windowsHide: true });
 
         function setDownloadProgressUI(mappedPct, phaseText, speedText = null, etaText = null) {
             const safePct = Math.max(highestDownloadMappedPct, Math.min(69, Math.round(mappedPct)));
