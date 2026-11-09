@@ -1,0 +1,35 @@
+========================================================================
+    PANDUAN INSTALASI & UNINSTALL ARDANE YT PLAYER (macOS)
+    Untuk Adobe Premiere Pro & Adobe After Effects (M1/M2/M3/M4 & Intel)
+========================================================================
+
+A. CARA INSTALL DI macOS (100% OFFLINE)
+------------------------------------------------------------------------
+Seluruh komponen mesin (yt-dlp, FFmpeg, FFprobe) SUDAH LENGKAP berformat
+Universal Mach-O (Apple Silicon M1/M2/M3/M4 & Intel Mac) di dalam paket ini.
+Proses install berjalan offline hanya dalam waktu ~2 detik!
+
+1. Klik kanan file ZIP ini lalu pilih "Open With" > "Archive Utility"
+   (atau klik 2x untuk mengekstrak folder installer).
+2. Buka folder hasil ekstrak, lalu klik 2x (Double-Click) file:
+   👉 Install_Ardane_YT_Player_Mac.command
+   (Catatan: Jika macOS menampilkan notifikasi keamanan "cannot be opened
+   because it is from an unidentified developer", cukup buka:
+   System Settings > Privacy & Security > scroll ke bawah lalu klik "Open Anyway").
+3. Terminal akan berjalan dan dalam ~2 detik muncul pesan:
+   "INSTALASI OFFLINE ARDANE YT PLAYER BERHASIL!"
+4. Buka (atau Restart jika sedang terbuka) Adobe Premiere Pro atau After Effects.
+5. Masuk ke menu atas:
+   Window > Extensions > Ardane YT Player
+
+
+B. CARA UNINSTALL DI macOS
+------------------------------------------------------------------------
+Jika Anda ingin menghapus plugin dari sistem Mac Anda:
+
+1. Klik 2x file:
+   👉 Uninstall_Ardane_YT_Player_Mac.command
+2. Ketik huruf 'y' lalu tekan [Enter] untuk mengonfirmasi.
+3. Plugin akan terhapus bersih dari folder ekstensi Adobe CEP.
+4. Restart Premiere Pro atau After Effects.
+========================================================================
