@@ -195,6 +195,14 @@
             reqHeaders["Range"] = incomingRange;
         }
 
+        let signedIp = parsedTarget.searchParams.get('ip') || '';
+        if (!signedIp && entry.url) {
+            try {
+                signedIp = new URL(entry.url).searchParams.get('ip') || '';
+            } catch (e) {}
+        }
+        const ipFamily = signedIp.includes(':') ? 6 : 4;
+
         const requestLib = parsedTarget.protocol === "http:" ? http : https;
         const options = {
             hostname: parsedTarget.hostname,
@@ -202,6 +210,7 @@
             path: parsedTarget.pathname + parsedTarget.search,
             method: "GET",
             headers: reqHeaders,
+            family: ipFamily,
             agent: false,
             timeout: 12000
         };
@@ -1532,33 +1541,55 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
         showPlayerLoading(isAutoRefetch ? 'Menyegarkan tautan stream video...' : 'Menghubungkan stream video Pro (1080p–4K)...');
 
         const ytDlp = resolveYtDlp();
-        const args = [
-            '--no-playlist',
-            '--no-warnings',
-            '--extractor-args', 'youtube:player_client=default,-tv_samsung',
-            '-J',
-            `https://www.youtube.com/watch?v=${videoId}`
-        ];
         const env = getProcessEnv();
 
-        const proc = cp.spawn(ytDlp, args, { env, windowsHide: true });
-        activeYtDlpProc = proc;
-        const stdoutChunks = [];
-
-        proc.stdout.on('data', chunk => stdoutChunks.push(chunk));
-
-        proc.on('close', code => {
-            if (activeYtDlpProc === proc) {
-                activeYtDlpProc = null;
+        const runMetadataFetch = (attemptIndex) => {
+            const args = [
+                '--no-playlist',
+                '--no-warnings',
+                '-J'
+            ];
+            if (attemptIndex === 0) {
+                args.unshift('--force-ipv4');
+                args.push('--extractor-args', 'youtube:player_client=default,-tv_samsung');
+            } else if (attemptIndex === 1) {
+                args.unshift('--force-ipv4');
+                args.push('--extractor-args', 'youtube:player_client=ios,mweb,web');
+            } else {
+                args.push('--extractor-args', 'youtube:player_client=default,-tv_samsung');
             }
-            // Ignore if user already clicked another video
-            if (requestToken !== activeStreamLoadToken) return;
+            args.push(`https://www.youtube.com/watch?v=${videoId}`);
 
-            if (code !== 0 || stdoutChunks.length === 0) {
-                console.warn('yt-dlp JSON scan failed');
+            const proc = cp.spawn(ytDlp, args, { env, windowsHide: true });
+            activeYtDlpProc = proc;
+            const stdoutChunks = [];
+
+            proc.stdout.on('data', chunk => stdoutChunks.push(chunk));
+
+            proc.on('error', () => {
+                if (requestToken !== activeStreamLoadToken) return;
+                if (attemptIndex < 2) {
+                    return runMetadataFetch(attemptIndex + 1);
+                }
                 showPlayerError('Gagal mengambil data video YouTube. Coba refresh atau pilih video lain.');
-                return;
-            }
+            });
+
+            proc.on('close', code => {
+                if (activeYtDlpProc === proc) {
+                    activeYtDlpProc = null;
+                }
+                // Ignore if user already clicked another video
+                if (requestToken !== activeStreamLoadToken) return;
+
+                if (code !== 0 || stdoutChunks.length === 0) {
+                    if (attemptIndex < 2) {
+                        console.log(`[Ardane Stream] Retrying metadata scan (attempt ${attemptIndex + 2}/3) for ${videoId}...`);
+                        return runMetadataFetch(attemptIndex + 1);
+                    }
+                    console.warn('yt-dlp JSON scan failed');
+                    showPlayerError('Gagal mengambil data video YouTube. Coba refresh atau pilih video lain.');
+                    return;
+                }
 
             try {
                 const rawJson = Buffer.concat(stdoutChunks).toString('utf8');
@@ -1659,7 +1690,10 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
                 console.error('Error parsing yt-dlp metadata:', err);
                 showPlayerError('Gagal memproses stream video: ' + (err.message || 'Format tidak valid'));
             }
-        });
+            });
+        };
+
+        runMetadataFetch(0);
     }
 
     function selectAndPlayStreamResolution(
@@ -4027,6 +4061,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
         const isYouTubeUrl = /youtube\.com|youtu\.be/i.test(url);
         const args = [
+            '--force-ipv4',
             '-J',
             '--no-playlist'
         ];
@@ -4668,6 +4703,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
         const isYouTubeUrl = /youtube\.com|youtu\.be/i.test(url);
         const args = [
+            '--force-ipv4',
             '--no-playlist',
             '--no-quiet',
             '--progress',
